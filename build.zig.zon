@@ -1,0 +1,7 @@
+.{
+    .name = ._3bp,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.15.2",
+    .paths = .{""},
+    .fingerprint = 0x93c9e33816223799,
+}
