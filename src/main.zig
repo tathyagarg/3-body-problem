@@ -21,6 +21,9 @@ const TRAIL_LENGTH = 100;
 const Body = struct {
     aPosition: rl.Vector3,
     aVelocity: rl.Vector3,
+
+    raw_vel: f32 = 0.0,
+
     mass: f32,
 
     color: rl.Color = .blue,
@@ -36,6 +39,7 @@ const Body = struct {
             .color = color,
         };
 
+        body.raw_vel = body.aVelocity.length();
         body.trail = [_]rl.Vector3{body.aPosition} ** TRAIL_LENGTH;
         return body;
     }
@@ -90,6 +94,7 @@ fn simulate(bodies: *[BODY_COUNT]Body, options: struct {
         const acceleration = force.scale(1 / body.mass);
         body.aVelocity = body.aVelocity.add(acceleration);
         body.aVelocity = body.aVelocity.scale(@as(f32, @floatFromInt(options.vel_damping)) / 1000.0);
+        body.raw_vel = body.aVelocity.length();
     }
 
     for (bodies) |*body| {
@@ -276,9 +281,10 @@ pub fn main() !void {
         rl.beginDrawing();
         rl.clearBackground(background_color);
 
-        _ = rg.groupBox(controls_pos, "Controls (c)");
+        if (text_visible)
+            _ = rg.groupBox(controls_pos, "Controls (c)");
 
-        if (controls_visible) {
+        if (text_visible and controls_visible) {
             _ = .{ rg.spinner(
                 .{
                     .x = controls_pos.x + controls_pos.width - 110,
@@ -319,9 +325,9 @@ pub fn main() !void {
 
             if (rg.button(
                 .{
-                    .x = controls_pos.x + controls_pos.width - 110,
+                    .x = controls_pos.x + 10,
                     .y = controls_pos.y + 140,
-                    .width = 100,
+                    .width = controls_pos.width - 20,
                     .height = 30,
                 },
                 if (is_paused) "#131#Play" else "#132#Pause",
@@ -330,9 +336,9 @@ pub fn main() !void {
 
             if (rg.button(
                 .{
-                    .x = controls_pos.x + controls_pos.width - 110,
+                    .x = controls_pos.x + 10,
                     .y = controls_pos.y + 180,
-                    .width = 100,
+                    .width = controls_pos.width - 20,
                     .height = 30,
                 },
                 "#211#Reset",
@@ -367,13 +373,14 @@ pub fn main() !void {
             }
 
             if (i == focused_body_index) {
-                rl.drawSphereWires(body.aPosition, 3.0, 5, 8, text_color);
+                rl.drawSphereWires(body.aPosition, RADIUS * 1.2, 5, 8, text_color);
             }
         }
 
         draw_grid_around(camera.target, .{});
 
         rl.endMode3D();
+
         if (text_visible) {
             rl.drawText("3-Body Problem Simulation", 10, 10, 20, text_color);
 
@@ -417,6 +424,82 @@ pub fn main() !void {
             );
 
             rl.drawFPS(10, SCREEN_HEIGHT - 30);
+
+            // use circles to draw a graph from (SCREEN_WIDTH - 100, SCREEN_HEIGHT - 30) to (SCREEN_WIDTH - 10, SCREEN_HEIGHT - 10)
+
+            // container:
+            _ = rg.groupBox(
+                rl.Rectangle{
+                    .x = SCREEN_WIDTH - 180,
+                    .y = SCREEN_HEIGHT - 110,
+                    .width = 170,
+                    .height = 100,
+                },
+                "Velocities",
+            );
+
+            _ = rg.progressBar(
+                rl.Rectangle{
+                    .x = SCREEN_WIDTH - 120,
+                    .y = SCREEN_HEIGHT - 100,
+                    .width = 80,
+                    .height = 20,
+                },
+                "Body 1",
+                ">5",
+                &bodies[0].raw_vel,
+                0.0,
+                5.0,
+            );
+
+            rl.drawCircle(
+                SCREEN_WIDTH - 115 + (@as(i32, @intFromFloat((bodies[0].raw_vel / 5.0) * 80.0))),
+                SCREEN_HEIGHT - 90,
+                5,
+                bodies[0].color,
+            );
+
+            _ = rg.progressBar(
+                rl.Rectangle{
+                    .x = SCREEN_WIDTH - 120,
+                    .y = SCREEN_HEIGHT - 70,
+                    .width = 80,
+                    .height = 20,
+                },
+                "Body 2",
+                ">5",
+                &bodies[1].raw_vel,
+                0.0,
+                5.0,
+            );
+
+            rl.drawCircle(
+                SCREEN_WIDTH - 115 + (@as(i32, @intFromFloat((bodies[1].raw_vel / 5.0) * 80.0))),
+                SCREEN_HEIGHT - 60,
+                5,
+                bodies[1].color,
+            );
+
+            _ = rg.progressBar(
+                rl.Rectangle{
+                    .x = SCREEN_WIDTH - 120,
+                    .y = SCREEN_HEIGHT - 40,
+                    .width = 80,
+                    .height = 20,
+                },
+                "Body 3",
+                ">5",
+                &bodies[2].raw_vel,
+                0.0,
+                5.0,
+            );
+
+            rl.drawCircle(
+                SCREEN_WIDTH - 115 + (@as(i32, @intFromFloat((bodies[2].raw_vel / 5.0) * 80.0))),
+                SCREEN_HEIGHT - 30,
+                5,
+                bodies[2].color,
+            );
         }
 
         rl.endDrawing();
