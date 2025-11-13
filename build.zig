@@ -18,6 +18,10 @@ pub fn build(b: *std.Build) !void {
         }),
     });
 
+    exe.root_module.addAnonymousImport("style", .{
+        .root_source_file = b.path("assets/style_genesis.rgs"),
+    });
+
     const raylib_dep = b.dependency("raylib_zig", .{
         .target = target,
         .optimize = optimize,

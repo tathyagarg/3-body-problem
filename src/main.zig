@@ -1,8 +1,12 @@
 const std = @import("std");
 const rl = @import("raylib");
+const rg = @import("raygui");
+
+const style = @embedFile("style");
 
 const BASE_SCALE = 1.0;
 const BODY_COUNT = 3;
+const RADIUS = 2.5;
 
 const SCREEN_WIDTH = 800;
 const SCREEN_HEIGHT = 640;
@@ -13,7 +17,6 @@ const GRAVITATIONAL_CONSTANT = 1.0;
 const CAMERA_SPEED = 3;
 
 const TRAIL_LENGTH = 100;
-const RESTITUTION_COEFFICIENT = 0.9;
 
 const Body = struct {
     aPosition: rl.Vector3,
@@ -43,20 +46,30 @@ const Body = struct {
     }
 };
 
+fn hex_to_color(hex: i32) rl.Color {
+    return rl.Color{
+        .r = @intCast((hex >> 24) & 0xFF),
+        .g = @intCast((hex >> 16) & 0xFF),
+        .b = @intCast((hex >> 8) & 0xFF),
+        .a = @intCast(hex & 0xFF),
+    };
+}
+
 fn simulate(bodies: *[BODY_COUNT]Body, options: struct {
-    vel_damping: f32 = 0.999,
+    vel_damping: i32 = 999,
+    restitution_coefficient: i32 = 999,
 }) void {
     for (bodies, 0..) |*body, i| {
         var force = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 };
         for (bodies, 0..) |*other_body, j| {
             if (i != j) {
-                if (rl.checkCollisionSpheres(body.aPosition, 2.5, other_body.aPosition, 2.5)) {
+                if (rl.checkCollisionSpheres(body.aPosition, RADIUS, other_body.aPosition, RADIUS)) {
                     const n = other_body.aPosition.subtract(body.aPosition).normalize();
                     const relative_velocity = other_body.aVelocity.subtract(body.aVelocity);
                     const velocity_along_normal = relative_velocity.dotProduct(n);
 
                     if (velocity_along_normal < 0) {
-                        const impulse = ((1.0 + RESTITUTION_COEFFICIENT) * velocity_along_normal) / (body.mass + other_body.mass);
+                        const impulse = ((1.0 + @as(f32, @floatFromInt(options.restitution_coefficient)) / 1000.0) * velocity_along_normal) / (body.mass + other_body.mass);
                         body.aVelocity = body.aVelocity.add(n.scale(impulse * other_body.mass));
                         other_body.aVelocity = other_body.aVelocity.subtract(n.scale(impulse * body.mass));
                     }
@@ -75,9 +88,8 @@ fn simulate(bodies: *[BODY_COUNT]Body, options: struct {
             }
         }
         const acceleration = force.scale(1 / body.mass);
-        // std.debug.print("Body {} Acceleration: ({}, {}, {})\n", .{ i, acceleration.x, acceleration.y, acceleration.z });
         body.aVelocity = body.aVelocity.add(acceleration);
-        body.aVelocity = body.aVelocity.scale(options.vel_damping);
+        body.aVelocity = body.aVelocity.scale(@as(f32, @floatFromInt(options.vel_damping)) / 1000.0);
     }
 
     for (bodies) |*body| {
@@ -113,6 +125,14 @@ pub fn main() !void {
 
     rl.initWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "3-body problem simulation");
 
+    var tmp = try std.fs.cwd().createFile("style.rgsl", .{ .truncate = true });
+    defer tmp.close();
+    defer std.fs.cwd().deleteFile("style.rgsl") catch {};
+
+    try tmp.writeAll(style);
+
+    rg.loadStyle("style.rgsl");
+
     var camera = rl.Camera3D{
         .position = (rl.Vector3{ .x = 0.0, .y = 0.0, .z = 300.0 }).scale(BASE_SCALE),
         .target = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
@@ -120,6 +140,12 @@ pub fn main() !void {
         .fovy = 45.0,
         .projection = .perspective,
     };
+
+    const background_color_raw = rg.getStyle(.default, .{ .default = .background_color });
+    const background_color = hex_to_color(background_color_raw);
+
+    const text_color_raw = rg.getStyle(.control11, .{ .control = .text_color_normal });
+    const text_color = hex_to_color(text_color_raw);
 
     const INITIAL_POSITION = [BODY_COUNT]Body{
         Body.init(
@@ -143,20 +169,6 @@ pub fn main() !void {
             .blue,
             .{},
         ),
-        // Body.init(
-        //     rl.Vector3{ .x = -10.0, .y = 0.0, .z = 0.0 },
-        //     rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
-        //     5.0,
-        //     .red,
-        //     .{},
-        // ),
-        // Body.init(
-        //     rl.Vector3{ .x = 10.0, .y = 0.0, .z = 0.0 },
-        //     rl.Vector3{ .x = 0.0, .y = 0.0, .z = -0.0 },
-        //     5.0,
-        //     .green,
-        //     .{},
-        // ),
     };
 
     // hard clone INITIAL_POSITION into bodies
@@ -169,13 +181,33 @@ pub fn main() !void {
 
     var focused_body_index: usize = 3;
     var is_paused = true;
-    var damping: f32 = 0.999;
+    var damping: i32 = 999;
+    var restitution: i32 = 999;
 
     var is_following = false;
+    var text_visible = true;
+    var controls_visible = true;
 
     var offset = rl.Vector3{ .x = 0.0, .y = 20.0, .z = 20.0 };
 
-    var text_visible = true;
+    const total_editable = 3;
+    var current_ui_elem: i32 = total_editable;
+
+    const CONTROLS_POS_VISIBLE: rl.Rectangle = .{
+        .x = SCREEN_WIDTH - 240,
+        .y = 10,
+        .width = 230,
+        .height = 220,
+    };
+
+    const CONTROLS_POS_HIDDEN: rl.Rectangle = .{
+        .x = SCREEN_WIDTH - 240,
+        .y = 10,
+        .width = 230,
+        .height = 10,
+    };
+
+    var controls_pos = CONTROLS_POS_VISIBLE;
 
     while (!rl.windowShouldClose()) {
         var update_target = if (is_following and focused_body_index < BODY_COUNT)
@@ -197,17 +229,12 @@ pub fn main() !void {
         if (rl.isKeyPressed(.right)) focused_body_index = (focused_body_index + 1) % (BODY_COUNT + 1);
 
         if (rl.isKeyPressed(.p)) is_paused = !is_paused;
-        if (rl.isKeyPressed(.up)) simulations_per_frame += 1;
-        if (rl.isKeyPressed(.down)) {
-            if (simulations_per_frame > 0) {
-                simulations_per_frame -= 1;
-            }
-        }
 
-        if (rl.isKeyPressed(.r)) {
-            for (INITIAL_POSITION, 0..) |body, i| {
-                bodies[i] = body;
-            }
+        if (rl.isKeyPressed(.tab)) {
+            current_ui_elem = if (rl.isKeyDown(.left_shift) or rl.isKeyDown(.right_shift))
+                @mod(current_ui_elem - 1 + total_editable + 1, total_editable + 1)
+            else
+                @mod(current_ui_elem + 1, total_editable + 1);
         }
 
         if (rl.isKeyPressed(.f)) {
@@ -218,21 +245,19 @@ pub fn main() !void {
             }
         }
 
-        if (rl.isKeyPressed(.equal)) {
-            damping += 0.001;
-            if (damping > 1.0) damping = 1.0;
-        }
-        if (rl.isKeyPressed(.minus)) {
-            damping -= 0.001;
-            if (damping < 0.0) damping = 0.0;
-        }
-
         if (rl.isKeyPressed(.u)) text_visible = !text_visible;
+        if (rl.isKeyPressed(.c)) {
+            controls_visible = !controls_visible;
+            controls_pos = if (controls_visible) CONTROLS_POS_VISIBLE else CONTROLS_POS_HIDDEN;
+        }
 
         if (!is_paused) {
             if (simulations_per_frame > 0) {
                 for (0..simulations_per_frame) |_| {
-                    simulate(&bodies, .{ .vel_damping = damping });
+                    simulate(&bodies, .{
+                        .vel_damping = damping,
+                        .restitution_coefficient = restitution,
+                    });
                 }
             }
         }
@@ -249,12 +274,79 @@ pub fn main() !void {
 
         // Draw
         rl.beginDrawing();
-        rl.clearBackground(.white);
+        rl.clearBackground(background_color);
+
+        _ = rg.groupBox(controls_pos, "Controls (c)");
+
+        if (controls_visible) {
+            _ = .{ rg.spinner(
+                .{
+                    .x = controls_pos.x + controls_pos.width - 110,
+                    .y = controls_pos.y + 20,
+                    .width = 100,
+                    .height = 30,
+                },
+                "Sims/Frame",
+                @as(*i32, @ptrCast(&simulations_per_frame)),
+                1,
+                100,
+                current_ui_elem == 0,
+            ), rg.spinner(
+                .{
+                    .x = controls_pos.x + controls_pos.width - 110,
+                    .y = controls_pos.y + 60,
+                    .width = 100,
+                    .height = 30,
+                },
+                "Damping(/1000)",
+                &damping,
+                900,
+                1000,
+                current_ui_elem == 1,
+            ), rg.spinner(
+                .{
+                    .x = controls_pos.x + controls_pos.width - 110,
+                    .y = controls_pos.y + 100,
+                    .width = 100,
+                    .height = 30,
+                },
+                "Restitution(/1000)",
+                &restitution,
+                900,
+                1000,
+                current_ui_elem == 2,
+            ) };
+
+            if (rg.button(
+                .{
+                    .x = controls_pos.x + controls_pos.width - 110,
+                    .y = controls_pos.y + 140,
+                    .width = 100,
+                    .height = 30,
+                },
+                if (is_paused) "#131#Play" else "#132#Pause",
+            ))
+                is_paused = !is_paused;
+
+            if (rg.button(
+                .{
+                    .x = controls_pos.x + controls_pos.width - 110,
+                    .y = controls_pos.y + 180,
+                    .width = 100,
+                    .height = 30,
+                },
+                "#211#Reset",
+            )) {
+                for (INITIAL_POSITION, 0..) |body, i|
+                    bodies[i] = body;
+            }
+        }
+
         rl.beginMode3D(camera);
 
         for (&bodies, 0..) |*body, i| {
             body.update_trail();
-            rl.drawSphere(body.aPosition, 2.5, body.color);
+            rl.drawSphere(body.aPosition, RADIUS, body.color);
 
             for (0..TRAIL_LENGTH - 1) |j| {
                 const index = (body.trail_index + j) % TRAIL_LENGTH;
@@ -269,14 +361,13 @@ pub fn main() !void {
                         .r = body.color.r,
                         .g = body.color.g,
                         .b = body.color.b,
-                        // alpha goes from 100 at the head (at the object) to 0 at the tail
                         .a = @as(u8, @intFromFloat(100.0 * ((@as(f32, @floatFromInt(j)) / @as(f32, @floatFromInt(TRAIL_LENGTH)))))),
                     },
                 );
             }
 
             if (i == focused_body_index) {
-                rl.drawSphereWires(body.aPosition, 3.0, 5, 8, .black);
+                rl.drawSphereWires(body.aPosition, 3.0, 5, 8, text_color);
             }
         }
 
@@ -284,12 +375,10 @@ pub fn main() !void {
 
         rl.endMode3D();
         if (text_visible) {
-            rl.drawText("3-Body Problem Simulation", 10, 10, 20, .dark_gray);
+            rl.drawText("3-Body Problem Simulation", 10, 10, 20, text_color);
 
             var campos_buffer: [64]u8 = undefined;
             var looking_at_buffer: [64]u8 = undefined;
-            var sim_per_frame_buffer: [32]u8 = undefined;
-            var damping_buffer: [32]u8 = undefined;
 
             rl.drawText(
                 try std.fmt.bufPrintZ(
@@ -308,7 +397,7 @@ pub fn main() !void {
                 10,
                 40,
                 20,
-                .dark_gray,
+                text_color,
             );
 
             rl.drawText(
@@ -324,31 +413,7 @@ pub fn main() !void {
                 10,
                 70,
                 20,
-                .dark_gray,
-            );
-
-            rl.drawText(
-                try std.fmt.bufPrintZ(
-                    &sim_per_frame_buffer,
-                    "Sims. per frame: {}",
-                    .{simulations_per_frame},
-                ),
-                10,
-                100,
-                20,
-                .dark_gray,
-            );
-
-            rl.drawText(
-                try std.fmt.bufPrintZ(
-                    &damping_buffer,
-                    "Damping: {}",
-                    .{damping},
-                ),
-                10,
-                130,
-                20,
-                .dark_gray,
+                text_color,
             );
 
             rl.drawFPS(10, SCREEN_HEIGHT - 30);
