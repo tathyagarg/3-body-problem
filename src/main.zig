@@ -1,41 +1,39 @@
 const std = @import("std");
 const rl = @import("raylib");
 const rg = @import("raygui");
+const config = @import("config");
 
 const style = @embedFile("style");
 
-const BASE_SCALE = 1.0;
-const BODY_COUNT = 3;
+// TODO: Make RADIUS dynamic
 const RADIUS = 2.5;
 
-const SCREEN_WIDTH = 800;
-const SCREEN_HEIGHT = 640;
+const SCREEN_WIDTH: i32 = config.screen_width;
+const SCREEN_HEIGHT: i32 = config.screen_height;
 
 const TARGET_FPS = 60;
-const GRAVITATIONAL_CONSTANT = 1.0;
 
 const CAMERA_SPEED = 3;
-
 const TRAIL_LENGTH = 100;
+const TOTAL_EDITABLE_UI = 3;
 
 const Body = struct {
     aPosition: rl.Vector3,
     aVelocity: rl.Vector3,
 
-    raw_vel: f32 = 0.0,
-
     mass: f32,
 
     color: rl.Color = .blue,
+    raw_vel: f32 = 0.0,
 
     trail: [TRAIL_LENGTH]rl.Vector3 = undefined,
     trail_index: usize = 0,
 
-    pub fn init(position: rl.Vector3, velocity: rl.Vector3, mass: f32, color: rl.Color, options: struct { scale: f32 = BASE_SCALE }) Body {
+    pub fn init(position: rl.Vector3, velocity: rl.Vector3, mass: f32, color: rl.Color) Body {
         var body = Body{
-            .aPosition = position.scale(options.scale),
-            .aVelocity = velocity.scale(options.scale),
-            .mass = mass * options.scale,
+            .aPosition = position,
+            .aVelocity = velocity,
+            .mass = mass,
             .color = color,
         };
 
@@ -50,6 +48,62 @@ const Body = struct {
     }
 };
 
+const State = struct {
+    allocator: std.mem.Allocator,
+
+    bodies: std.ArrayList(Body),
+    body_count: usize,
+    velocity_box_height: i32,
+
+    focused_body_index: usize,
+    focused_ui_element: usize,
+
+    simulations_per_frame: usize,
+    damping: i32,
+    restitution: i32,
+
+    is_paused: bool,
+    is_following: bool,
+    is_text_visible: bool,
+    is_controls_visible: bool,
+
+    offset: rl.Vector3,
+
+    pub fn init(allocator: std.mem.Allocator) State {
+        return State{
+            .allocator = allocator,
+            .bodies = std.ArrayList(Body).empty,
+            .body_count = 0,
+            .velocity_box_height = 0,
+            .focused_body_index = 1,
+            .focused_ui_element = 0,
+            .simulations_per_frame = 1,
+            .damping = 999,
+            .restitution = 999,
+            .is_paused = true,
+            .is_following = false,
+            .is_text_visible = true,
+            .is_controls_visible = true,
+            .offset = rl.Vector3{ .x = 0.0, .y = 20.0, .z = 20.0 },
+        };
+    }
+
+    pub fn add_body(self: *State, body: Body) !void {
+        try self.bodies.append(self.allocator, body);
+        self.update_body_count_props();
+    }
+
+    pub fn deinit(self: *State) void {
+        self.bodies.deinit(self.allocator);
+    }
+
+    pub fn update_body_count_props(self: *State) void {
+        self.body_count = self.bodies.items.len;
+        self.focused_body_index = self.body_count + 1;
+        self.velocity_box_height = @intCast((10 * (self.body_count + 1)) + (20 * self.body_count));
+    }
+};
+
 fn hex_to_color(hex: i32) rl.Color {
     return rl.Color{
         .r = @intCast((hex >> 24) & 0xFF),
@@ -59,21 +113,32 @@ fn hex_to_color(hex: i32) rl.Color {
     };
 }
 
-fn simulate(bodies: *[BODY_COUNT]Body, options: struct {
+fn simulate(bodies: *std.ArrayList(Body), options: struct {
     vel_damping: i32 = 999,
     restitution_coefficient: i32 = 999,
+    allow_collisions: bool = true,
 }) void {
-    for (bodies, 0..) |*body, i| {
+    const impulse_coefficient = 1.0 + (@as(f32, @floatFromInt(options.restitution_coefficient)) / 1000.0);
+    const damping_factor = @as(f32, @floatFromInt(options.vel_damping)) / 1000.0;
+
+    for (bodies.items, 0..) |*body, i| {
         var force = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 };
-        for (bodies, 0..) |*other_body, j| {
+        for (bodies.items, 0..) |*other_body, j| {
             if (i != j) {
-                if (rl.checkCollisionSpheres(body.aPosition, RADIUS, other_body.aPosition, RADIUS)) {
+                if (options.allow_collisions and
+                    rl.checkCollisionSpheres(
+                        body.aPosition,
+                        RADIUS,
+                        other_body.aPosition,
+                        RADIUS,
+                    ))
+                {
                     const n = other_body.aPosition.subtract(body.aPosition).normalize();
                     const relative_velocity = other_body.aVelocity.subtract(body.aVelocity);
                     const velocity_along_normal = relative_velocity.dotProduct(n);
 
                     if (velocity_along_normal < 0) {
-                        const impulse = ((1.0 + @as(f32, @floatFromInt(options.restitution_coefficient)) / 1000.0) * velocity_along_normal) / (body.mass + other_body.mass);
+                        const impulse = (impulse_coefficient * velocity_along_normal) / (body.mass + other_body.mass);
                         body.aVelocity = body.aVelocity.add(n.scale(impulse * other_body.mass));
                         other_body.aVelocity = other_body.aVelocity.subtract(n.scale(impulse * body.mass));
                     }
@@ -85,7 +150,7 @@ fn simulate(bodies: *[BODY_COUNT]Body, options: struct {
                     };
                     const distance = direction.length();
 
-                    const f = GRAVITATIONAL_CONSTANT * (body.mass * other_body.mass) / (distance * distance);
+                    const f = (body.mass * other_body.mass) / (distance * distance);
                     const norm_direction = direction.normalize();
                     force = force.add(norm_direction.scale(f));
                 }
@@ -93,18 +158,19 @@ fn simulate(bodies: *[BODY_COUNT]Body, options: struct {
         }
         const acceleration = force.scale(1 / body.mass);
         body.aVelocity = body.aVelocity.add(acceleration);
-        body.aVelocity = body.aVelocity.scale(@as(f32, @floatFromInt(options.vel_damping)) / 1000.0);
+        body.aVelocity = body.aVelocity.scale(damping_factor);
         body.raw_vel = body.aVelocity.length();
     }
 
-    for (bodies) |*body| {
+    for (bodies.items) |*body| {
         body.aPosition = body.aPosition.add(body.aVelocity);
     }
 }
 
 fn draw_grid_around(center: rl.Vector3, options: struct {
     slices: usize = 10,
-    spacing: f32 = 10.0 * BASE_SCALE,
+    spacing: f32 = 10.0,
+    color: rl.Color = .light_gray,
 }) void {
     const half_size = @as(f32, @floatFromInt(options.slices)) * options.spacing / 2.0;
 
@@ -114,20 +180,57 @@ fn draw_grid_around(center: rl.Vector3, options: struct {
         rl.drawLine3D(
             rl.Vector3{ .x = center.x - half_size, .y = center.y, .z = center.z + offset },
             rl.Vector3{ .x = center.x + half_size, .y = center.y, .z = center.z + offset },
-            .light_gray,
+            options.color,
         );
 
         rl.drawLine3D(
             rl.Vector3{ .x = center.x + offset, .y = center.y, .z = center.z - half_size },
             rl.Vector3{ .x = center.x + offset, .y = center.y, .z = center.z + half_size },
-            .light_gray,
+            options.color,
         );
     }
 }
 
-pub fn main() !void {
-    var simulations_per_frame: usize = 1;
+fn reset(target: *std.ArrayList(Body), new: std.ArrayList(Body), allocator: std.mem.Allocator) !void {
+    target.* = try new.clone(allocator);
+}
 
+pub fn main() !void {
+    // === Constants ===
+    const allocator = std.heap.page_allocator;
+
+    var initial_position = try std.ArrayList(Body).initCapacity(allocator, 3);
+    defer initial_position.deinit(allocator);
+
+    try initial_position.append(allocator, Body.init(
+        rl.Vector3{ .x = 20.0, .y = 0.0, .z = 0.0 },
+        rl.Vector3{ .x = 0.0, .y = 0.0, .z = -0.17 },
+        5.0,
+        .red,
+    ));
+
+    try initial_position.append(allocator, Body.init(
+        rl.Vector3{ .x = -10.0, .y = 0.0, .z = 17.320508 },
+        rl.Vector3{ .x = 0.147198, .y = 0.0, .z = 0.084949 },
+        1.0,
+        .green,
+    ));
+
+    try initial_position.append(allocator, Body.init(
+        rl.Vector3{ .x = -10.0, .y = 0.0, .z = -17.320508 },
+        rl.Vector3{ .x = -0.147198, .y = 0.0, .z = 0.084949 },
+        10.0,
+        .blue,
+    ));
+
+    // try initial_position.append(allocator, Body.init(
+    //     rl.Vector3{ .x = 0.0, .y = 30.0, .z = 0.0 },
+    //     rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
+    //     20.0,
+    //     .yellow,
+    // ));
+
+    // === Initialization ===
     rl.initWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "3-body problem simulation");
 
     var tmp = try std.fs.cwd().createFile("style.rgsl", .{ .truncate = true });
@@ -139,7 +242,7 @@ pub fn main() !void {
     rg.loadStyle("style.rgsl");
 
     var camera = rl.Camera3D{
-        .position = (rl.Vector3{ .x = 0.0, .y = 0.0, .z = 300.0 }).scale(BASE_SCALE),
+        .position = (rl.Vector3{ .x = 0.0, .y = 0.0, .z = 300.0 }),
         .target = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
         .up = rl.Vector3{ .x = 0.0, .y = 1.0, .z = 0.0 },
         .fovy = 45.0,
@@ -152,51 +255,11 @@ pub fn main() !void {
     const text_color_raw = rg.getStyle(.control11, .{ .control = .text_color_normal });
     const text_color = hex_to_color(text_color_raw);
 
-    const INITIAL_POSITION = [BODY_COUNT]Body{
-        Body.init(
-            rl.Vector3{ .x = 20.0, .y = 0.0, .z = 0.0 },
-            rl.Vector3{ .x = 0.0, .y = 0.0, .z = -0.17 },
-            5.0,
-            .red,
-            .{},
-        ),
-        Body.init(
-            rl.Vector3{ .x = -10.0, .y = 0.0, .z = 17.320508 },
-            rl.Vector3{ .x = 0.147198, .y = 0.0, .z = 0.084949 },
-            1.0,
-            .green,
-            .{},
-        ),
-        Body.init(
-            rl.Vector3{ .x = -10.0, .y = 0.0, .z = -17.320508 },
-            rl.Vector3{ .x = -0.147198, .y = 0.0, .z = 0.084949 },
-            10.0,
-            .blue,
-            .{},
-        ),
-    };
-
-    // hard clone INITIAL_POSITION into bodies
-    var bodies: [BODY_COUNT]Body = undefined;
-    for (INITIAL_POSITION, 0..) |body, i| {
-        bodies[i] = body;
-    }
+    var state = State.init(allocator);
+    try reset(&state.bodies, initial_position, allocator);
+    state.update_body_count_props();
 
     rl.setTargetFPS(TARGET_FPS);
-
-    var focused_body_index: usize = 3;
-    var is_paused = true;
-    var damping: i32 = 999;
-    var restitution: i32 = 999;
-
-    var is_following = false;
-    var text_visible = true;
-    var controls_visible = true;
-
-    var offset = rl.Vector3{ .x = 0.0, .y = 20.0, .z = 20.0 };
-
-    const total_editable = 3;
-    var current_ui_elem: i32 = total_editable;
 
     const CONTROLS_POS_VISIBLE: rl.Rectangle = .{
         .x = SCREEN_WIDTH - 240,
@@ -213,67 +276,70 @@ pub fn main() !void {
     };
 
     var controls_pos = CONTROLS_POS_VISIBLE;
+    // var simulations_per_frame: usize = 1;
+
+    // const VELBOX_HEIGHT = (10 * (BODY_COUNT + 1)) + (20 * BODY_COUNT);
 
     while (!rl.windowShouldClose()) {
-        var update_target = if (is_following and focused_body_index < BODY_COUNT)
-            &offset
+        var update_target = if (state.is_following and state.focused_body_index < state.body_count)
+            &state.offset
         else
             &camera.position;
 
-        if (rl.isKeyDown(.w)) update_target.y += CAMERA_SPEED * BASE_SCALE;
-        if (rl.isKeyDown(.s)) update_target.y -= CAMERA_SPEED * BASE_SCALE;
-        if (rl.isKeyDown(.a)) update_target.x -= CAMERA_SPEED * BASE_SCALE;
-        if (rl.isKeyDown(.d)) update_target.x += CAMERA_SPEED * BASE_SCALE;
-        if (rl.isKeyDown(.q)) update_target.z -= CAMERA_SPEED * BASE_SCALE;
-        if (rl.isKeyDown(.e)) update_target.z += CAMERA_SPEED * BASE_SCALE;
+        if (rl.isKeyDown(.w)) update_target.y += CAMERA_SPEED;
+        if (rl.isKeyDown(.s)) update_target.y -= CAMERA_SPEED;
+        if (rl.isKeyDown(.a)) update_target.x -= CAMERA_SPEED;
+        if (rl.isKeyDown(.d)) update_target.x += CAMERA_SPEED;
+        if (rl.isKeyDown(.q)) update_target.z -= CAMERA_SPEED;
+        if (rl.isKeyDown(.e)) update_target.z += CAMERA_SPEED;
 
-        if (rl.isKeyPressed(.one)) focused_body_index = 0;
-        if (rl.isKeyPressed(.two)) focused_body_index = 1;
-        if (rl.isKeyPressed(.three)) focused_body_index = 2;
-        if (rl.isKeyPressed(.left)) focused_body_index = (focused_body_index + BODY_COUNT) % (BODY_COUNT + 1);
-        if (rl.isKeyPressed(.right)) focused_body_index = (focused_body_index + 1) % (BODY_COUNT + 1);
+        if (rl.isKeyPressed(.one)) state.focused_body_index = 0;
+        if (rl.isKeyPressed(.two)) state.focused_body_index = 1;
+        if (rl.isKeyPressed(.three)) state.focused_body_index = 2;
+        if (rl.isKeyPressed(.left)) state.focused_body_index = (state.focused_body_index + state.body_count) % (state.body_count + 1);
+        if (rl.isKeyPressed(.right)) state.focused_body_index = (state.focused_body_index + 1) % (state.body_count + 1);
 
-        if (rl.isKeyPressed(.p)) is_paused = !is_paused;
+        if (rl.isKeyPressed(.p)) state.is_paused = !state.is_paused;
 
         if (rl.isKeyPressed(.tab)) {
-            current_ui_elem = if (rl.isKeyDown(.left_shift) or rl.isKeyDown(.right_shift))
-                @mod(current_ui_elem - 1 + total_editable + 1, total_editable + 1)
+            state.focused_ui_element = if (rl.isKeyDown(.left_shift) or rl.isKeyDown(.right_shift))
+                @mod(state.focused_ui_element - 1 + TOTAL_EDITABLE_UI + 1, TOTAL_EDITABLE_UI + 1)
             else
-                @mod(current_ui_elem + 1, total_editable + 1);
+                @mod(state.focused_ui_element + 1, TOTAL_EDITABLE_UI + 1);
         }
 
         if (rl.isKeyPressed(.f)) {
-            is_following = !is_following;
-            if (is_following and focused_body_index < BODY_COUNT) {
-                camera.target = bodies[focused_body_index].aPosition;
-                camera.position = bodies[focused_body_index].aPosition.add(offset);
+            state.is_following = !state.is_following;
+            if (state.is_following and state.focused_body_index < state.body_count) {
+                camera.target = state.bodies.items[state.focused_body_index].aPosition;
+                camera.position = state.bodies.items[state.focused_body_index].aPosition.add(state.offset);
             }
         }
 
-        if (rl.isKeyPressed(.u)) text_visible = !text_visible;
+        if (rl.isKeyPressed(.u)) state.is_text_visible = !state.is_text_visible;
         if (rl.isKeyPressed(.c)) {
-            controls_visible = !controls_visible;
-            controls_pos = if (controls_visible) CONTROLS_POS_VISIBLE else CONTROLS_POS_HIDDEN;
+            state.is_controls_visible = !state.is_controls_visible;
+            controls_pos = if (state.is_controls_visible) CONTROLS_POS_VISIBLE else CONTROLS_POS_HIDDEN;
         }
 
-        if (!is_paused) {
-            if (simulations_per_frame > 0) {
-                for (0..simulations_per_frame) |_| {
-                    simulate(&bodies, .{
-                        .vel_damping = damping,
-                        .restitution_coefficient = restitution,
+        if (!state.is_paused) {
+            if (state.simulations_per_frame > 0) {
+                for (0..state.simulations_per_frame) |_| {
+                    simulate(&state.bodies, .{
+                        .vel_damping = state.damping,
+                        .restitution_coefficient = state.restitution,
                     });
                 }
             }
         }
 
-        camera.target = if (focused_body_index < BODY_COUNT)
-            bodies[focused_body_index].aPosition
+        camera.target = if (state.focused_body_index < state.body_count)
+            state.bodies.items[state.focused_body_index].aPosition
         else
             rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 };
 
-        camera.position = if (is_following and focused_body_index < BODY_COUNT)
-            bodies[focused_body_index].aPosition.add(offset)
+        camera.position = if (state.is_following and state.focused_body_index < state.body_count)
+            state.bodies.items[state.focused_body_index].aPosition.add(state.offset)
         else
             camera.position;
 
@@ -281,10 +347,10 @@ pub fn main() !void {
         rl.beginDrawing();
         rl.clearBackground(background_color);
 
-        if (text_visible)
+        if (state.is_text_visible)
             _ = rg.groupBox(controls_pos, "Controls (c)");
 
-        if (text_visible and controls_visible) {
+        if (state.is_text_visible and state.is_controls_visible) {
             _ = .{ rg.spinner(
                 .{
                     .x = controls_pos.x + controls_pos.width - 110,
@@ -293,10 +359,10 @@ pub fn main() !void {
                     .height = 30,
                 },
                 "Sims/Frame",
-                @as(*i32, @ptrCast(&simulations_per_frame)),
+                @as(*i32, @ptrCast(&state.simulations_per_frame)),
                 1,
                 100,
-                current_ui_elem == 0,
+                state.focused_ui_element == 0,
             ), rg.spinner(
                 .{
                     .x = controls_pos.x + controls_pos.width - 110,
@@ -305,10 +371,10 @@ pub fn main() !void {
                     .height = 30,
                 },
                 "Damping(/1000)",
-                &damping,
-                900,
+                &state.damping,
+                if (config.jailbreak) 0 else 900,
                 1000,
-                current_ui_elem == 1,
+                state.focused_ui_element == 1,
             ), rg.spinner(
                 .{
                     .x = controls_pos.x + controls_pos.width - 110,
@@ -317,10 +383,10 @@ pub fn main() !void {
                     .height = 30,
                 },
                 "Restitution(/1000)",
-                &restitution,
-                900,
+                &state.restitution,
+                if (config.jailbreak) 0 else 900,
                 1000,
-                current_ui_elem == 2,
+                state.focused_ui_element == 2,
             ) };
 
             if (rg.button(
@@ -330,9 +396,9 @@ pub fn main() !void {
                     .width = controls_pos.width - 20,
                     .height = 30,
                 },
-                if (is_paused) "#131#Play" else "#132#Pause",
+                if (state.is_paused) "#131#Play" else "#132#Pause",
             ))
-                is_paused = !is_paused;
+                state.is_paused = !state.is_paused;
 
             if (rg.button(
                 .{
@@ -343,14 +409,13 @@ pub fn main() !void {
                 },
                 "#211#Reset",
             )) {
-                for (INITIAL_POSITION, 0..) |body, i|
-                    bodies[i] = body;
+                try reset(&state.bodies, initial_position, allocator);
             }
         }
 
         rl.beginMode3D(camera);
 
-        for (&bodies, 0..) |*body, i| {
+        for (state.bodies.items, 0..) |*body, i| {
             body.update_trail();
             rl.drawSphere(body.aPosition, RADIUS, body.color);
 
@@ -372,7 +437,7 @@ pub fn main() !void {
                 );
             }
 
-            if (i == focused_body_index) {
+            if (i == state.focused_body_index) {
                 rl.drawSphereWires(body.aPosition, RADIUS * 1.2, 5, 8, text_color);
             }
         }
@@ -381,7 +446,7 @@ pub fn main() !void {
 
         rl.endMode3D();
 
-        if (text_visible) {
+        if (state.is_text_visible) {
             rl.drawText("3-Body Problem Simulation", 10, 10, 20, text_color);
 
             var campos_buffer: [64]u8 = undefined;
@@ -391,14 +456,14 @@ pub fn main() !void {
                 try std.fmt.bufPrintZ(
                     &campos_buffer,
                     "Camera: {}, {}, {}",
-                    if (is_following and focused_body_index < BODY_COUNT) .{
-                        offset.x / BASE_SCALE,
-                        offset.y / BASE_SCALE,
-                        offset.z / BASE_SCALE,
+                    if (state.is_following and state.focused_body_index < state.body_count) .{
+                        state.offset.x,
+                        state.offset.y,
+                        state.offset.z,
                     } else .{
-                        camera.position.x / BASE_SCALE,
-                        camera.position.y / BASE_SCALE,
-                        camera.position.z / BASE_SCALE,
+                        camera.position.x,
+                        camera.position.y,
+                        camera.position.z,
                     },
                 ),
                 10,
@@ -412,9 +477,9 @@ pub fn main() !void {
                     &looking_at_buffer,
                     "Looking at: {}, {}, {}",
                     .{
-                        camera.target.x / BASE_SCALE,
-                        camera.target.y / BASE_SCALE,
-                        camera.target.z / BASE_SCALE,
+                        camera.target.x,
+                        camera.target.y,
+                        camera.target.z,
                     },
                 ),
                 10,
@@ -431,75 +496,39 @@ pub fn main() !void {
             _ = rg.groupBox(
                 rl.Rectangle{
                     .x = SCREEN_WIDTH - 180,
-                    .y = SCREEN_HEIGHT - 110,
+                    .y = @floatFromInt(SCREEN_HEIGHT - state.velocity_box_height - 10),
                     .width = 170,
-                    .height = 100,
+                    .height = @floatFromInt(state.velocity_box_height),
                 },
                 "Velocities",
             );
 
-            _ = rg.progressBar(
-                rl.Rectangle{
-                    .x = SCREEN_WIDTH - 120,
-                    .y = SCREEN_HEIGHT - 100,
-                    .width = 80,
-                    .height = 20,
-                },
-                "Body 1",
-                ">5",
-                &bodies[0].raw_vel,
-                0.0,
-                5.0,
-            );
+            var text_left_buffer: [16]u8 = undefined;
 
-            rl.drawCircle(
-                SCREEN_WIDTH - 115 + (@as(i32, @intFromFloat((bodies[0].raw_vel / 5.0) * 80.0))),
-                SCREEN_HEIGHT - 90,
-                5,
-                bodies[0].color,
-            );
+            for (state.bodies.items, 0..) |*body, i| {
+                text_left_buffer = undefined;
 
-            _ = rg.progressBar(
-                rl.Rectangle{
-                    .x = SCREEN_WIDTH - 120,
-                    .y = SCREEN_HEIGHT - 70,
-                    .width = 80,
-                    .height = 20,
-                },
-                "Body 2",
-                ">5",
-                &bodies[1].raw_vel,
-                0.0,
-                5.0,
-            );
+                _ = rg.progressBar(
+                    rl.Rectangle{
+                        .x = SCREEN_WIDTH - 120,
+                        .y = @floatFromInt(SCREEN_HEIGHT - state.velocity_box_height + @as(i32, @intCast(i * 30))),
+                        .width = 80,
+                        .height = 20,
+                    },
+                    try std.fmt.bufPrintZ(&text_left_buffer, "Body {}", .{i + 1}),
+                    ">5",
+                    &body.raw_vel,
+                    0.0,
+                    5.0,
+                );
 
-            rl.drawCircle(
-                SCREEN_WIDTH - 115 + (@as(i32, @intFromFloat((bodies[1].raw_vel / 5.0) * 80.0))),
-                SCREEN_HEIGHT - 60,
-                5,
-                bodies[1].color,
-            );
-
-            _ = rg.progressBar(
-                rl.Rectangle{
-                    .x = SCREEN_WIDTH - 120,
-                    .y = SCREEN_HEIGHT - 40,
-                    .width = 80,
-                    .height = 20,
-                },
-                "Body 3",
-                ">5",
-                &bodies[2].raw_vel,
-                0.0,
-                5.0,
-            );
-
-            rl.drawCircle(
-                SCREEN_WIDTH - 115 + (@as(i32, @intFromFloat((bodies[2].raw_vel / 5.0) * 80.0))),
-                SCREEN_HEIGHT - 30,
-                5,
-                bodies[2].color,
-            );
+                _ = rl.drawCircle(
+                    SCREEN_WIDTH - 115 + (@as(i32, @intFromFloat((@min(body.raw_vel, 5.0) / 5.0) * 80.0))),
+                    SCREEN_HEIGHT - state.velocity_box_height + 10 + @as(i32, @intCast(i * 30)),
+                    5,
+                    body.color,
+                );
+            }
         }
 
         rl.endDrawing();
