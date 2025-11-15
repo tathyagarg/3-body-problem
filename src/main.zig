@@ -24,7 +24,7 @@ const POSITIONS: [3]rl.Rectangle = .{
     .{ .x = SCREEN_WIDTH - 240, .y = 10, .width = 230, .height = 530 },
 };
 
-const controls_pos = enum(usize) {
+const ControlsPos = enum(usize) {
     VISIBLE,
     HIDDEN,
     ADDING_BODY,
@@ -65,6 +65,57 @@ const Body = struct {
     }
 };
 
+const EditingBody = struct {
+    position: rl.Vector3 = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
+    velocity: rl.Vector3 = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
+    mass: f32 = 1.0,
+
+    pos_x_buffer: [64]u8,
+    pos_y_buffer: [64]u8,
+    pos_z_buffer: [64]u8,
+
+    pos_x_str: [:0]u8 = undefined,
+    pos_y_str: [:0]u8 = undefined,
+    pos_z_str: [:0]u8 = undefined,
+
+    vel_x_buffer: [64]u8,
+    vel_y_buffer: [64]u8,
+    vel_z_buffer: [64]u8,
+
+    vel_x_str: [:0]u8 = undefined,
+    vel_y_str: [:0]u8 = undefined,
+    vel_z_str: [:0]u8 = undefined,
+
+    mass_buffer: [64]u8,
+    mass_str: [:0]u8 = undefined,
+
+    color: rl.Color = .white,
+
+    pub fn default() EditingBody {
+        return EditingBody{
+            .pos_x_buffer = .{'0'} ++ .{0} ** 63,
+            .pos_y_buffer = .{'0'} ++ .{0} ** 63,
+            .pos_z_buffer = .{'0'} ++ .{0} ** 63,
+            .vel_x_buffer = .{'0'} ++ .{0} ** 63,
+            .vel_y_buffer = .{'0'} ++ .{0} ** 63,
+            .vel_z_buffer = .{'0'} ++ .{0} ** 63,
+            .mass_buffer = .{'1'} ++ .{0} ** 63,
+        };
+    }
+
+    pub fn initialize_strings(self: *EditingBody) void {
+        self.pos_x_str = self.pos_x_buffer[0..1 :0];
+        self.pos_y_str = self.pos_y_buffer[0..1 :0];
+        self.pos_z_str = self.pos_z_buffer[0..1 :0];
+
+        self.vel_x_str = self.vel_x_buffer[0..1 :0];
+        self.vel_y_str = self.vel_y_buffer[0..1 :0];
+        self.vel_z_str = self.vel_z_buffer[0..1 :0];
+
+        self.mass_str = self.mass_buffer[0..1 :0];
+    }
+};
+
 // literally every variable related to the state of the simulation
 const State = struct {
     allocator: std.mem.Allocator,
@@ -73,7 +124,7 @@ const State = struct {
     body_count: usize = 0,
     velocity_box_height: i32 = 0,
 
-    focused_body_index: usize = 1,
+    focused_body_index: usize = 0,
     focused_ui_element: enum(u32) {
         NONE = TOTAL_EDITABLE_UI,
         SIMS_PER_FRAME = 0,
@@ -99,63 +150,17 @@ const State = struct {
 
     offset: rl.Vector3 = rl.Vector3{ .x = 0.0, .y = 20.0, .z = 20.0 },
 
-    raw_controls_pos: controls_pos = controls_pos.VISIBLE,
-    controls_pos: rl.Rectangle = POSITIONS[@intFromEnum(controls_pos.VISIBLE)],
+    raw_controls_pos: ControlsPos = .VISIBLE,
+    controls_pos: rl.Rectangle = POSITIONS[@intFromEnum(ControlsPos.VISIBLE)],
 
     // i hate this too but idk
     // the valueBoxFloat api needs a [:0]u8 for the string input and it pmo
-    new_body: struct {
-        position: rl.Vector3 = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
-        velocity: rl.Vector3 = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
-        mass: f32 = 1.0,
-
-        pos_x_buffer: [64]u8,
-        pos_y_buffer: [64]u8,
-        pos_z_buffer: [64]u8,
-
-        pos_x_str: [:0]u8 = undefined,
-        pos_y_str: [:0]u8 = undefined,
-        pos_z_str: [:0]u8 = undefined,
-
-        vel_x_buffer: [64]u8,
-        vel_y_buffer: [64]u8,
-        vel_z_buffer: [64]u8,
-
-        vel_x_str: [:0]u8 = undefined,
-        vel_y_str: [:0]u8 = undefined,
-        vel_z_str: [:0]u8 = undefined,
-
-        mass_buffer: [64]u8,
-        mass_str: [:0]u8 = undefined,
-
-        color: rl.Color = .white,
-    },
+    new_body: EditingBody = EditingBody.default(),
 
     pub fn init(allocator: std.mem.Allocator) State {
         return State{
             .allocator = allocator,
-            .new_body = .{
-                .pos_x_buffer = .{'0'} ++ .{0} ** 63,
-                .pos_y_buffer = .{'0'} ++ .{0} ** 63,
-                .pos_z_buffer = .{'0'} ++ .{0} ** 63,
-                .vel_x_buffer = .{'0'} ++ .{0} ** 63,
-                .vel_y_buffer = .{'0'} ++ .{0} ** 63,
-                .vel_z_buffer = .{'0'} ++ .{0} ** 63,
-                .mass_buffer = .{'1'} ++ .{0} ** 63,
-            },
         };
-    }
-
-    pub fn initialize_strings(self: *State) void {
-        self.new_body.pos_x_str = self.new_body.pos_x_buffer[0..1 :0];
-        self.new_body.pos_y_str = self.new_body.pos_y_buffer[0..1 :0];
-        self.new_body.pos_z_str = self.new_body.pos_z_buffer[0..1 :0];
-
-        self.new_body.vel_x_str = self.new_body.vel_x_buffer[0..1 :0];
-        self.new_body.vel_y_str = self.new_body.vel_y_buffer[0..1 :0];
-        self.new_body.vel_z_str = self.new_body.vel_z_buffer[0..1 :0];
-
-        self.new_body.mass_str = self.new_body.mass_buffer[0..1 :0];
     }
 
     pub fn add_body(self: *State, body: Body) !void {
@@ -169,18 +174,43 @@ const State = struct {
 
     pub fn update_body_count_props(self: *State) void {
         self.body_count = self.bodies.items.len;
-        self.focused_body_index = self.body_count + 1;
+        self.focused_body_index = self.body_count;
         self.velocity_box_height = @intCast((10 * (self.body_count + 1)) + (20 * self.body_count));
     }
 
     pub fn toggle_is_controls_visible(self: *State) void {
-        self.raw_controls_pos = if (self.raw_controls_pos == .HIDDEN) controls_pos.VISIBLE else controls_pos.HIDDEN;
+        self.raw_controls_pos = if (self.raw_controls_pos == .HIDDEN) .VISIBLE else .HIDDEN;
         self.controls_pos = POSITIONS[@intFromEnum(self.raw_controls_pos)];
     }
 
-    pub fn toggle_is_adding_body(self: *State) void {
-        self.raw_controls_pos = if (self.raw_controls_pos != .ADDING_BODY) controls_pos.ADDING_BODY else controls_pos.VISIBLE;
+    pub fn toggle_is_adding_body(self: *State) !void {
+        self.raw_controls_pos = if (self.raw_controls_pos != .ADDING_BODY) .ADDING_BODY else .VISIBLE;
         self.controls_pos = POSITIONS[@intFromEnum(self.raw_controls_pos)];
+
+        try self.update_buffer_contents();
+    }
+
+    pub fn update_buffer_contents(self: *State) !void {
+        if (self.focused_body_index != self.body_count) {
+            const body = self.bodies.items[self.focused_body_index];
+            self.new_body.position = body.position;
+            self.new_body.velocity = body.velocity;
+            self.new_body.mass = body.mass;
+            self.new_body.color = body.color;
+
+            _ = try std.fmt.bufPrintZ(&self.new_body.pos_x_buffer, "{}", .{body.position.x});
+            _ = try std.fmt.bufPrintZ(&self.new_body.pos_y_buffer, "{}", .{body.position.y});
+            _ = try std.fmt.bufPrintZ(&self.new_body.pos_z_buffer, "{}", .{body.position.z});
+
+            _ = try std.fmt.bufPrintZ(&self.new_body.vel_x_buffer, "{}", .{body.velocity.x});
+            _ = try std.fmt.bufPrintZ(&self.new_body.vel_y_buffer, "{}", .{body.velocity.y});
+            _ = try std.fmt.bufPrintZ(&self.new_body.vel_z_buffer, "{}", .{body.velocity.z});
+
+            _ = try std.fmt.bufPrintZ(&self.new_body.mass_buffer, "{}", .{body.mass});
+        } else {
+            self.new_body = EditingBody.default();
+            self.new_body.initialize_strings();
+        }
     }
 };
 
@@ -331,7 +361,7 @@ pub fn main() !void {
     const text_color = hex_to_color(text_color_raw);
 
     var state = State.init(allocator);
-    state.initialize_strings();
+    state.new_body.initialize_strings();
     defer state.deinit();
 
     try reset(&state.bodies, initial_position, allocator);
@@ -340,7 +370,7 @@ pub fn main() !void {
     rl.setTargetFPS(TARGET_FPS);
 
     while (!rl.windowShouldClose()) {
-        var update_target = if (state.is_following and state.focused_body_index < state.body_count)
+        var update_target = if (state.is_following and state.focused_body_index != state.body_count)
             &state.offset
         else
             &camera.position;
@@ -352,15 +382,21 @@ pub fn main() !void {
         if (rl.isKeyDown(.q)) update_target.z -= CAMERA_SPEED;
         if (rl.isKeyDown(.e)) update_target.z += CAMERA_SPEED;
 
-        if (rl.isKeyPressed(.left)) state.focused_body_index = (state.focused_body_index + state.body_count) % (state.body_count + 1);
-        if (rl.isKeyPressed(.right)) state.focused_body_index = (state.focused_body_index + 1) % (state.body_count + 1);
+        if (rl.isKeyPressed(.left)) {
+            state.focused_body_index = (state.focused_body_index + state.body_count) % (state.body_count + 1);
+            try state.update_buffer_contents();
+        }
+        if (rl.isKeyPressed(.right)) {
+            state.focused_body_index = (state.focused_body_index + 1) % (state.body_count + 1);
+            try state.update_buffer_contents();
+        }
 
         if (rl.isKeyPressed(.p)) state.is_playing = !state.is_playing;
         if (rl.isKeyPressed(.r)) try reset(&state.bodies, initial_position, allocator);
 
         if (rl.isKeyPressed(.tab)) {
             state.focused_ui_element = if (rl.isKeyDown(.left_shift) or rl.isKeyDown(.right_shift))
-                @enumFromInt(@mod(@intFromEnum(state.focused_ui_element) - 1 + TOTAL_EDITABLE_UI + 1, TOTAL_EDITABLE_UI + 1))
+                @enumFromInt(@mod(@intFromEnum(state.focused_ui_element) + TOTAL_EDITABLE_UI, TOTAL_EDITABLE_UI + 1))
             else
                 @enumFromInt(@mod(@intFromEnum(state.focused_ui_element) + 1, TOTAL_EDITABLE_UI + 1));
         }
@@ -448,7 +484,7 @@ pub fn main() !void {
                     "Sims/Frame",
                     @as(*i32, @ptrCast(&state.simulations_per_frame)),
                     1,
-                    100,
+                    if (config.jailbreak) 1000 else 100,
                     state.focused_ui_element == .SIMS_PER_FRAME,
                 ), rg.spinner(
                     .{
@@ -527,8 +563,8 @@ pub fn main() !void {
                         .width = state.controls_pos.width - 20,
                         .height = 30,
                     },
-                    "#214#Add Body",
-                )) state.toggle_is_adding_body();
+                    if (state.focused_body_index == state.body_count) "#214#Add Body" else "#22#Edit Body",
+                )) try state.toggle_is_adding_body();
             }
 
             if (state.raw_controls_pos == .ADDING_BODY) {
@@ -677,12 +713,21 @@ pub fn main() !void {
                     },
                     "#8#Submit",
                 )) {
-                    try state.add_body(Body.init(
-                        state.new_body.position,
-                        state.new_body.velocity,
-                        if (state.new_body.mass > 0.0) state.new_body.mass else 1.0,
-                        state.new_body.color,
-                    ));
+                    if (state.focused_body_index == state.body_count) {
+                        try state.add_body(Body.init(
+                            state.new_body.position,
+                            state.new_body.velocity,
+                            if (state.new_body.mass > 0.0) state.new_body.mass else 1.0,
+                            state.new_body.color,
+                        ));
+                    } else {
+                        state.bodies.items[state.focused_body_index] = Body.init(
+                            state.new_body.position,
+                            state.new_body.velocity,
+                            if (state.new_body.mass > 0.0) state.new_body.mass else 1.0,
+                            state.new_body.color,
+                        );
+                    }
                 }
             }
 
