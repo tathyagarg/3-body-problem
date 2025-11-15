@@ -56,7 +56,18 @@ const State = struct {
     velocity_box_height: i32,
 
     focused_body_index: usize,
-    focused_ui_element: usize,
+    focused_ui_element: enum(u32) {
+        NONE = TOTAL_EDITABLE_UI,
+        SIMS_PER_FRAME = 0,
+        DAMPING = 1,
+        RESTITUTION = 2,
+        POS_X = 0x100,
+        POS_Y = 0x101,
+        POS_Z = 0x102,
+        VEL_X = 0x200,
+        VEL_Y = 0x201,
+        VEL_Z = 0x202,
+    } = .NONE,
 
     simulations_per_frame: usize,
     damping: i32,
@@ -66,8 +77,32 @@ const State = struct {
     is_following: bool,
     is_text_visible: bool,
     is_controls_visible: bool,
+    is_adding_body: bool,
 
     offset: rl.Vector3,
+
+    new_body: struct {
+        position: rl.Vector3,
+        velocity: rl.Vector3,
+
+        pos_x_buffer: [64]u8,
+        pos_y_buffer: [64]u8,
+        pos_z_buffer: [64]u8,
+
+        pos_x_str: [:0]u8 = undefined,
+        pos_y_str: [:0]u8 = undefined,
+        pos_z_str: [:0]u8 = undefined,
+
+        vel_x_buffer: [64]u8,
+        vel_y_buffer: [64]u8,
+        vel_z_buffer: [64]u8,
+
+        vel_x_str: [:0]u8 = undefined,
+        vel_y_str: [:0]u8 = undefined,
+        vel_z_str: [:0]u8 = undefined,
+
+        color: rl.Color = .white,
+    },
 
     pub fn init(allocator: std.mem.Allocator) State {
         return State{
@@ -76,7 +111,6 @@ const State = struct {
             .body_count = 0,
             .velocity_box_height = 0,
             .focused_body_index = 1,
-            .focused_ui_element = 0,
             .simulations_per_frame = 1,
             .damping = 999,
             .restitution = 999,
@@ -84,8 +118,29 @@ const State = struct {
             .is_following = false,
             .is_text_visible = true,
             .is_controls_visible = true,
+            .is_adding_body = false,
             .offset = rl.Vector3{ .x = 0.0, .y = 20.0, .z = 20.0 },
+            .new_body = .{
+                .position = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
+                .velocity = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
+                .pos_x_buffer = .{'0'} ++ .{0} ** 63,
+                .pos_y_buffer = .{'0'} ++ .{0} ** 63,
+                .pos_z_buffer = .{'0'} ++ .{0} ** 63,
+                .vel_x_buffer = .{'0'} ++ .{0} ** 63,
+                .vel_y_buffer = .{'0'} ++ .{0} ** 63,
+                .vel_z_buffer = .{'0'} ++ .{0} ** 63,
+            },
         };
+    }
+
+    pub fn post_init(self: *State) void {
+        self.new_body.pos_x_str = self.new_body.pos_x_buffer[0..1 :0];
+        self.new_body.pos_y_str = self.new_body.pos_y_buffer[0..1 :0];
+        self.new_body.pos_z_str = self.new_body.pos_z_buffer[0..1 :0];
+
+        self.new_body.vel_x_str = self.new_body.vel_x_buffer[0..1 :0];
+        self.new_body.vel_y_str = self.new_body.vel_y_buffer[0..1 :0];
+        self.new_body.vel_z_str = self.new_body.vel_z_buffer[0..1 :0];
     }
 
     pub fn add_body(self: *State, body: Body) !void {
@@ -223,13 +278,6 @@ pub fn main() !void {
         .blue,
     ));
 
-    // try initial_position.append(allocator, Body.init(
-    //     rl.Vector3{ .x = 0.0, .y = 30.0, .z = 0.0 },
-    //     rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
-    //     20.0,
-    //     .yellow,
-    // ));
-
     // === Initialization ===
     rl.initWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "3-body problem simulation");
 
@@ -256,6 +304,8 @@ pub fn main() !void {
     const text_color = hex_to_color(text_color_raw);
 
     var state = State.init(allocator);
+    state.post_init();
+
     try reset(&state.bodies, initial_position, allocator);
     state.update_body_count_props();
 
@@ -265,7 +315,7 @@ pub fn main() !void {
         .x = SCREEN_WIDTH - 240,
         .y = 10,
         .width = 230,
-        .height = 220,
+        .height = 300,
     };
 
     const CONTROLS_POS_HIDDEN: rl.Rectangle = .{
@@ -275,10 +325,14 @@ pub fn main() !void {
         .height = 10,
     };
 
-    var controls_pos = CONTROLS_POS_VISIBLE;
-    // var simulations_per_frame: usize = 1;
+    const CONTROLS_POS_ADDING_BODY: rl.Rectangle = .{
+        .x = SCREEN_WIDTH - 240,
+        .y = 10,
+        .width = 230,
+        .height = 490,
+    };
 
-    // const VELBOX_HEIGHT = (10 * (BODY_COUNT + 1)) + (20 * BODY_COUNT);
+    var controls_pos = CONTROLS_POS_VISIBLE;
 
     while (!rl.windowShouldClose()) {
         var update_target = if (state.is_following and state.focused_body_index < state.body_count)
@@ -293,19 +347,17 @@ pub fn main() !void {
         if (rl.isKeyDown(.q)) update_target.z -= CAMERA_SPEED;
         if (rl.isKeyDown(.e)) update_target.z += CAMERA_SPEED;
 
-        if (rl.isKeyPressed(.one)) state.focused_body_index = 0;
-        if (rl.isKeyPressed(.two)) state.focused_body_index = 1;
-        if (rl.isKeyPressed(.three)) state.focused_body_index = 2;
         if (rl.isKeyPressed(.left)) state.focused_body_index = (state.focused_body_index + state.body_count) % (state.body_count + 1);
         if (rl.isKeyPressed(.right)) state.focused_body_index = (state.focused_body_index + 1) % (state.body_count + 1);
 
         if (rl.isKeyPressed(.p)) state.is_paused = !state.is_paused;
+        if (rl.isKeyPressed(.r)) try reset(&state.bodies, initial_position, allocator);
 
         if (rl.isKeyPressed(.tab)) {
             state.focused_ui_element = if (rl.isKeyDown(.left_shift) or rl.isKeyDown(.right_shift))
-                @mod(state.focused_ui_element - 1 + TOTAL_EDITABLE_UI + 1, TOTAL_EDITABLE_UI + 1)
+                @enumFromInt(@mod(@intFromEnum(state.focused_ui_element) - 1 + TOTAL_EDITABLE_UI + 1, TOTAL_EDITABLE_UI + 1))
             else
-                @mod(state.focused_ui_element + 1, TOTAL_EDITABLE_UI + 1);
+                @enumFromInt(@mod(@intFromEnum(state.focused_ui_element) + 1, TOTAL_EDITABLE_UI + 1));
         }
 
         if (rl.isKeyPressed(.f)) {
@@ -346,73 +398,6 @@ pub fn main() !void {
         // Draw
         rl.beginDrawing();
         rl.clearBackground(background_color);
-
-        if (state.is_text_visible)
-            _ = rg.groupBox(controls_pos, "Controls (c)");
-
-        if (state.is_text_visible and state.is_controls_visible) {
-            _ = .{ rg.spinner(
-                .{
-                    .x = controls_pos.x + controls_pos.width - 110,
-                    .y = controls_pos.y + 20,
-                    .width = 100,
-                    .height = 30,
-                },
-                "Sims/Frame",
-                @as(*i32, @ptrCast(&state.simulations_per_frame)),
-                1,
-                100,
-                state.focused_ui_element == 0,
-            ), rg.spinner(
-                .{
-                    .x = controls_pos.x + controls_pos.width - 110,
-                    .y = controls_pos.y + 60,
-                    .width = 100,
-                    .height = 30,
-                },
-                "Damping(/1000)",
-                &state.damping,
-                if (config.jailbreak) 0 else 900,
-                1000,
-                state.focused_ui_element == 1,
-            ), rg.spinner(
-                .{
-                    .x = controls_pos.x + controls_pos.width - 110,
-                    .y = controls_pos.y + 100,
-                    .width = 100,
-                    .height = 30,
-                },
-                "Restitution(/1000)",
-                &state.restitution,
-                if (config.jailbreak) 0 else 900,
-                1000,
-                state.focused_ui_element == 2,
-            ) };
-
-            if (rg.button(
-                .{
-                    .x = controls_pos.x + 10,
-                    .y = controls_pos.y + 140,
-                    .width = controls_pos.width - 20,
-                    .height = 30,
-                },
-                if (state.is_paused) "#131#Play" else "#132#Pause",
-            ))
-                state.is_paused = !state.is_paused;
-
-            if (rg.button(
-                .{
-                    .x = controls_pos.x + 10,
-                    .y = controls_pos.y + 180,
-                    .width = controls_pos.width - 20,
-                    .height = 30,
-                },
-                "#211#Reset",
-            )) {
-                try reset(&state.bodies, initial_position, allocator);
-            }
-        }
-
         rl.beginMode3D(camera);
 
         for (state.bodies.items, 0..) |*body, i| {
@@ -447,6 +432,243 @@ pub fn main() !void {
         rl.endMode3D();
 
         if (state.is_text_visible) {
+            _ = rg.groupBox(controls_pos, "Controls (c)");
+
+            if (state.is_controls_visible) {
+                _ = .{ rg.spinner(
+                    .{
+                        .x = controls_pos.x + controls_pos.width - 110,
+                        .y = controls_pos.y + 20,
+                        .width = 100,
+                        .height = 30,
+                    },
+                    "Sims/Frame",
+                    @as(*i32, @ptrCast(&state.simulations_per_frame)),
+                    1,
+                    100,
+                    state.focused_ui_element == .SIMS_PER_FRAME,
+                ), rg.spinner(
+                    .{
+                        .x = controls_pos.x + controls_pos.width - 110,
+                        .y = controls_pos.y + 60,
+                        .width = 100,
+                        .height = 30,
+                    },
+                    "Damping(/1000)",
+                    &state.damping,
+                    if (config.jailbreak) 0 else 900,
+                    1000,
+                    state.focused_ui_element == .DAMPING,
+                ), rg.spinner(
+                    .{
+                        .x = controls_pos.x + controls_pos.width - 110,
+                        .y = controls_pos.y + 100,
+                        .width = 100,
+                        .height = 30,
+                    },
+                    "Restitution(/1000)",
+                    &state.restitution,
+                    if (config.jailbreak) 0 else 900,
+                    1000,
+                    state.focused_ui_element == .RESTITUTION,
+                ) };
+
+                if (rg.button(
+                    .{
+                        .x = controls_pos.x + 10,
+                        .y = controls_pos.y + 140,
+                        .width = controls_pos.width - 20,
+                        .height = 30,
+                    },
+                    if (state.is_paused) "#131#Play" else "#132#Pause",
+                ))
+                    state.is_paused = !state.is_paused;
+
+                if (rg.button(
+                    .{
+                        .x = controls_pos.x + 10,
+                        .y = controls_pos.y + 180,
+                        .width = controls_pos.width - 20,
+                        .height = 30,
+                    },
+                    "#211#Reset",
+                ))
+                    try reset(&state.bodies, initial_position, allocator);
+
+                if (rg.button(
+                    .{
+                        .x = controls_pos.x + 10,
+                        .y = controls_pos.y + 220,
+                        .width = controls_pos.width - 20,
+                        .height = 30,
+                    },
+                    if (state.is_following) "#113#Unfollow" else "#112#Follow",
+                ))
+                    state.is_following = !state.is_following;
+
+                if (rg.button(
+                    .{
+                        .x = controls_pos.x + 10,
+                        .y = controls_pos.y + 260,
+                        .width = controls_pos.width - 20,
+                        .height = 30,
+                    },
+                    "#214#Add Body",
+                )) {
+                    // create ui to add a body
+                    state.is_adding_body = !state.is_adding_body;
+                    controls_pos = if (!state.is_adding_body) CONTROLS_POS_VISIBLE else CONTROLS_POS_ADDING_BODY;
+                }
+            }
+
+            if (state.is_adding_body) {
+                _ = rg.groupBox(
+                    rl.Rectangle{
+                        .x = controls_pos.x + 10,
+                        .y = controls_pos.y + 300,
+                        .width = controls_pos.width - 20,
+                        .height = 50,
+                    },
+                    "Position (x,y,z)",
+                );
+
+                if (rg.valueBoxFloat(
+                    .{
+                        .x = controls_pos.x + 20,
+                        .y = controls_pos.y + 310,
+                        .width = (controls_pos.width - 40) / 3 - 5,
+                        .height = 30,
+                    },
+                    "",
+                    state.new_body.pos_x_str,
+                    &state.new_body.position.x,
+                    state.focused_ui_element == .POS_X,
+                ) != 0) {
+                    state.focused_ui_element = .POS_X;
+                }
+
+                if (rg.valueBoxFloat(
+                    .{
+                        .x = controls_pos.x + 25 + (controls_pos.width - 40) / 3,
+                        .y = controls_pos.y + 310,
+                        .width = (controls_pos.width - 40) / 3 - 5,
+                        .height = 30,
+                    },
+                    "",
+                    state.new_body.pos_y_str,
+                    &state.new_body.position.y,
+                    state.focused_ui_element == .POS_Y,
+                ) != 0) {
+                    state.focused_ui_element = .POS_Y;
+                }
+
+                if (rg.valueBoxFloat(
+                    .{
+                        .x = controls_pos.x + 30 + 2 * (controls_pos.width - 40) / 3,
+                        .y = controls_pos.y + 310,
+                        .width = (controls_pos.width - 40) / 3 - 5,
+                        .height = 30,
+                    },
+                    "",
+                    state.new_body.pos_z_str,
+                    &state.new_body.position.z,
+                    state.focused_ui_element == .POS_Z,
+                ) != 0) {
+                    state.focused_ui_element = .POS_Z;
+                }
+
+                _ = rg.groupBox(
+                    rl.Rectangle{
+                        .x = controls_pos.x + 10,
+                        .y = controls_pos.y + 360,
+                        .width = controls_pos.width - 20,
+                        .height = 50,
+                    },
+                    "Velocity (x,y,z)",
+                );
+
+                if (rg.valueBoxFloat(
+                    .{
+                        .x = controls_pos.x + 20,
+                        .y = controls_pos.y + 370,
+                        .width = (controls_pos.width - 40) / 3 - 5,
+                        .height = 30,
+                    },
+                    "",
+                    state.new_body.vel_x_str,
+                    &state.new_body.velocity.x,
+                    state.focused_ui_element == .VEL_X,
+                ) != 0) {
+                    state.focused_ui_element = .VEL_X;
+                }
+
+                if (rg.valueBoxFloat(
+                    .{
+                        .x = controls_pos.x + 25 + (controls_pos.width - 40) / 3,
+                        .y = controls_pos.y + 370,
+                        .width = (controls_pos.width - 40) / 3 - 5,
+                        .height = 30,
+                    },
+                    "",
+                    state.new_body.vel_y_str,
+                    &state.new_body.velocity.y,
+                    state.focused_ui_element == .VEL_Y,
+                ) != 0) {
+                    state.focused_ui_element = .VEL_Y;
+                }
+
+                if (rg.valueBoxFloat(
+                    .{
+                        .x = controls_pos.x + 30 + 2 * (controls_pos.width - 40) / 3,
+                        .y = controls_pos.y + 370,
+                        .width = (controls_pos.width - 40) / 3 - 5,
+                        .height = 30,
+                    },
+                    "",
+                    state.new_body.vel_z_str,
+                    &state.new_body.velocity.z,
+                    state.focused_ui_element == .VEL_Z,
+                ) != 0) {
+                    state.focused_ui_element = .VEL_Z;
+                }
+
+                _ = rg.colorPicker(
+                    rl.Rectangle{
+                        .x = controls_pos.x + 10,
+                        .y = controls_pos.y + 420,
+                        .width = (controls_pos.width - 20) / 2 - 5,
+                        .height = 60,
+                    },
+                    "Color",
+                    &state.new_body.color,
+                );
+
+                if (rg.button(
+                    .{
+                        .x = controls_pos.x + 40 + (controls_pos.width - 20) / 2,
+                        .y = controls_pos.y + 420,
+                        .width = (controls_pos.width - 20) / 2 - 30,
+                        .height = 60,
+                    },
+                    "#8#Submit",
+                )) {
+                    std.debug.print("Adding body at position: {}, {}, {} with velocity: {}, {}, {}\n", .{
+                        state.new_body.position.x,
+                        state.new_body.position.y,
+                        state.new_body.position.z,
+                        state.new_body.velocity.x,
+                        state.new_body.velocity.y,
+                        state.new_body.velocity.z,
+                    });
+                    try state.add_body(Body.init(
+                        state.new_body.position,
+                        state.new_body.velocity,
+                        1.0,
+                        state.new_body.color,
+                    ));
+                }
+            }
+
             rl.drawText("3-Body Problem Simulation", 10, 10, 20, text_color);
 
             var campos_buffer: [64]u8 = undefined;
@@ -490,9 +712,6 @@ pub fn main() !void {
 
             rl.drawFPS(10, SCREEN_HEIGHT - 30);
 
-            // use circles to draw a graph from (SCREEN_WIDTH - 100, SCREEN_HEIGHT - 30) to (SCREEN_WIDTH - 10, SCREEN_HEIGHT - 10)
-
-            // container:
             _ = rg.groupBox(
                 rl.Rectangle{
                     .x = SCREEN_WIDTH - 180,
