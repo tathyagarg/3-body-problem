@@ -19,9 +19,9 @@ const TOTAL_EDITABLE_UI = 3;
 
 // i hate that this is hardcoded but im not about to write a dynamic ui system rn
 const POSITIONS: [3]rl.Rectangle = .{
-    .{ .x = SCREEN_WIDTH - 230, .y = 320, .width = 50, .height = 30 },
-    .{ .x = SCREEN_WIDTH - 170, .y = 320, .width = 50, .height = 30 },
-    .{ .x = SCREEN_WIDTH - 110, .y = 320, .width = 50, .height = 30 },
+    .{ .x = SCREEN_WIDTH - 240, .y = 10, .width = 230, .height = 300 },
+    .{ .x = SCREEN_WIDTH - 240, .y = 10, .width = 230, .height = 10 },
+    .{ .x = SCREEN_WIDTH - 240, .y = 10, .width = 230, .height = 530 },
 };
 
 const controls_pos = enum(usize) {
@@ -69,11 +69,11 @@ const Body = struct {
 const State = struct {
     allocator: std.mem.Allocator,
 
-    bodies: std.ArrayList(Body),
-    body_count: usize,
-    velocity_box_height: i32,
+    bodies: std.ArrayList(Body) = std.ArrayList(Body).empty,
+    body_count: usize = 0,
+    velocity_box_height: i32 = 0,
 
-    focused_body_index: usize,
+    focused_body_index: usize = 1,
     focused_ui_element: enum(u32) {
         NONE = TOTAL_EDITABLE_UI,
         SIMS_PER_FRAME = 0,
@@ -88,18 +88,18 @@ const State = struct {
         MASS = 0x300,
     } = .NONE,
 
-    simulations_per_frame: usize,
-    damping: i32,
-    restitution: i32,
+    simulations_per_frame: usize = 1,
+    damping: i32 = 999,
+    restitution: i32 = 999,
 
-    is_playing: bool,
-    is_following: bool,
-    is_text_visible: bool,
-    is_controls_visible: bool,
-    is_adding_body: bool,
+    is_playing: bool = false,
+    is_following: bool = false,
+    is_text_visible: bool = true,
+    is_collisions_allowed: bool = true,
 
-    offset: rl.Vector3,
+    offset: rl.Vector3 = rl.Vector3{ .x = 0.0, .y = 20.0, .z = 20.0 },
 
+    raw_controls_pos: controls_pos = controls_pos.VISIBLE,
     controls_pos: rl.Rectangle = POSITIONS[@intFromEnum(controls_pos.VISIBLE)],
 
     // i hate this too but idk
@@ -134,19 +134,6 @@ const State = struct {
     pub fn init(allocator: std.mem.Allocator) State {
         return State{
             .allocator = allocator,
-            .bodies = std.ArrayList(Body).empty,
-            .body_count = 0,
-            .velocity_box_height = 0,
-            .focused_body_index = 1,
-            .simulations_per_frame = 1,
-            .damping = 999,
-            .restitution = 999,
-            .is_playing = false,
-            .is_following = false,
-            .is_text_visible = true,
-            .is_controls_visible = true,
-            .is_adding_body = false,
-            .offset = rl.Vector3{ .x = 0.0, .y = 20.0, .z = 20.0 },
             .new_body = .{
                 .pos_x_buffer = .{'0'} ++ .{0} ** 63,
                 .pos_y_buffer = .{'0'} ++ .{0} ** 63,
@@ -187,13 +174,13 @@ const State = struct {
     }
 
     pub fn toggle_is_controls_visible(self: *State) void {
-        self.is_controls_visible = !self.is_controls_visible;
-        self.controls_pos = POSITIONS[@intFromEnum(if (self.is_controls_visible) controls_pos.VISIBLE else controls_pos.HIDDEN)];
+        self.raw_controls_pos = if (self.raw_controls_pos == .HIDDEN) controls_pos.VISIBLE else controls_pos.HIDDEN;
+        self.controls_pos = POSITIONS[@intFromEnum(self.raw_controls_pos)];
     }
 
     pub fn toggle_is_adding_body(self: *State) void {
-        self.is_adding_body = !self.is_adding_body;
-        self.controls_pos = POSITIONS[@intFromEnum(if (!self.is_adding_body) controls_pos.VISIBLE else controls_pos.ADDING_BODY)];
+        self.raw_controls_pos = if (self.raw_controls_pos != .ADDING_BODY) controls_pos.ADDING_BODY else controls_pos.VISIBLE;
+        self.controls_pos = POSITIONS[@intFromEnum(self.raw_controls_pos)];
     }
 };
 
@@ -395,6 +382,7 @@ pub fn main() !void {
                     simulate(&state.bodies, .{
                         .vel_damping = state.damping,
                         .restitution_coefficient = state.restitution,
+                        .allow_collisions = state.is_collisions_allowed,
                     });
                 }
             }
@@ -449,7 +437,7 @@ pub fn main() !void {
         if (state.is_text_visible) {
             _ = rg.groupBox(state.controls_pos, "Controls (c)");
 
-            if (state.is_controls_visible) {
+            if (state.raw_controls_pos == .VISIBLE or state.raw_controls_pos == .ADDING_BODY) {
                 _ = .{ rg.spinner(
                     .{
                         .x = state.controls_pos.x + state.controls_pos.width - 110,
@@ -488,17 +476,6 @@ pub fn main() !void {
                     state.focused_ui_element == .RESTITUTION,
                 ) };
 
-                if (rg.button(
-                    .{
-                        .x = state.controls_pos.x + 10,
-                        .y = state.controls_pos.y + 180,
-                        .width = state.controls_pos.width - 20,
-                        .height = 30,
-                    },
-                    "#211#Reset",
-                ))
-                    try reset(&state.bodies, initial_position, allocator);
-
                 _ = rg.checkBox(
                     .{
                         .x = state.controls_pos.x + 10,
@@ -521,6 +498,28 @@ pub fn main() !void {
                     &state.is_following,
                 );
 
+                _ = rg.checkBox(
+                    .{
+                        .x = state.controls_pos.x + 10,
+                        .y = state.controls_pos.y + 180,
+                        .width = 30,
+                        .height = 30,
+                    },
+                    "#155#Collisions",
+                    &state.is_collisions_allowed,
+                );
+
+                if (rg.button(
+                    .{
+                        .x = state.controls_pos.x + 10,
+                        .y = state.controls_pos.y + 220,
+                        .width = state.controls_pos.width - 20,
+                        .height = 30,
+                    },
+                    "#211#Reset",
+                ))
+                    try reset(&state.bodies, initial_position, allocator);
+
                 if (rg.button(
                     .{
                         .x = state.controls_pos.x + 10,
@@ -532,7 +531,7 @@ pub fn main() !void {
                 )) state.toggle_is_adding_body();
             }
 
-            if (state.is_adding_body) {
+            if (state.raw_controls_pos == .ADDING_BODY) {
                 _ = rg.groupBox(
                     rl.Rectangle{
                         .x = state.controls_pos.x + 10,
