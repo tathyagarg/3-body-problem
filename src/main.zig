@@ -17,6 +17,27 @@ const CAMERA_SPEED = 3;
 const TRAIL_LENGTH = 100;
 const TOTAL_EDITABLE_UI = 3;
 
+const CONTROLS_POS_VISIBLE: rl.Rectangle = .{
+    .x = SCREEN_WIDTH - 240,
+    .y = 10,
+    .width = 230,
+    .height = 300,
+};
+
+const CONTROLS_POS_HIDDEN: rl.Rectangle = .{
+    .x = SCREEN_WIDTH - 240,
+    .y = 10,
+    .width = 230,
+    .height = 10,
+};
+
+const CONTROLS_POS_ADDING_BODY: rl.Rectangle = .{
+    .x = SCREEN_WIDTH - 240,
+    .y = 10,
+    .width = 230,
+    .height = 530,
+};
+
 const Body = struct {
     aPosition: rl.Vector3,
     aVelocity: rl.Vector3,
@@ -67,6 +88,7 @@ const State = struct {
         VEL_X = 0x200,
         VEL_Y = 0x201,
         VEL_Z = 0x202,
+        MASS = 0x300,
     } = .NONE,
 
     simulations_per_frame: usize,
@@ -84,6 +106,7 @@ const State = struct {
     new_body: struct {
         position: rl.Vector3,
         velocity: rl.Vector3,
+        mass: f32,
 
         pos_x_buffer: [64]u8,
         pos_y_buffer: [64]u8,
@@ -100,6 +123,9 @@ const State = struct {
         vel_x_str: [:0]u8 = undefined,
         vel_y_str: [:0]u8 = undefined,
         vel_z_str: [:0]u8 = undefined,
+
+        mass_buffer: [64]u8,
+        mass_str: [:0]u8 = undefined,
 
         color: rl.Color = .white,
     },
@@ -123,12 +149,14 @@ const State = struct {
             .new_body = .{
                 .position = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
                 .velocity = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
+                .mass = 1.0,
                 .pos_x_buffer = .{'0'} ++ .{0} ** 63,
                 .pos_y_buffer = .{'0'} ++ .{0} ** 63,
                 .pos_z_buffer = .{'0'} ++ .{0} ** 63,
                 .vel_x_buffer = .{'0'} ++ .{0} ** 63,
                 .vel_y_buffer = .{'0'} ++ .{0} ** 63,
                 .vel_z_buffer = .{'0'} ++ .{0} ** 63,
+                .mass_buffer = .{'1'} ++ .{0} ** 63,
             },
         };
     }
@@ -141,6 +169,8 @@ const State = struct {
         self.new_body.vel_x_str = self.new_body.vel_x_buffer[0..1 :0];
         self.new_body.vel_y_str = self.new_body.vel_y_buffer[0..1 :0];
         self.new_body.vel_z_str = self.new_body.vel_z_buffer[0..1 :0];
+
+        self.new_body.mass_str = self.new_body.mass_buffer[0..1 :0];
     }
 
     pub fn add_body(self: *State, body: Body) !void {
@@ -310,27 +340,6 @@ pub fn main() !void {
     state.update_body_count_props();
 
     rl.setTargetFPS(TARGET_FPS);
-
-    const CONTROLS_POS_VISIBLE: rl.Rectangle = .{
-        .x = SCREEN_WIDTH - 240,
-        .y = 10,
-        .width = 230,
-        .height = 300,
-    };
-
-    const CONTROLS_POS_HIDDEN: rl.Rectangle = .{
-        .x = SCREEN_WIDTH - 240,
-        .y = 10,
-        .width = 230,
-        .height = 10,
-    };
-
-    const CONTROLS_POS_ADDING_BODY: rl.Rectangle = .{
-        .x = SCREEN_WIDTH - 240,
-        .y = 10,
-        .width = 230,
-        .height = 490,
-    };
 
     var controls_pos = CONTROLS_POS_VISIBLE;
 
@@ -636,34 +645,41 @@ pub fn main() !void {
                     rl.Rectangle{
                         .x = controls_pos.x + 10,
                         .y = controls_pos.y + 420,
-                        .width = (controls_pos.width - 20) / 2 - 5,
+                        .width = (controls_pos.width - 20) / 2 - 25,
                         .height = 60,
                     },
                     "Color",
                     &state.new_body.color,
                 );
 
-                if (rg.button(
+                if (rg.valueBoxFloat(
                     .{
                         .x = controls_pos.x + 40 + (controls_pos.width - 20) / 2,
                         .y = controls_pos.y + 420,
                         .width = (controls_pos.width - 20) / 2 - 30,
                         .height = 60,
                     },
+                    "Mass",
+                    state.new_body.mass_str,
+                    &state.new_body.mass,
+                    state.focused_ui_element == .MASS,
+                ) != 0) {
+                    state.focused_ui_element = .MASS;
+                }
+
+                if (rg.button(
+                    .{
+                        .x = controls_pos.x + 10,
+                        .y = controls_pos.y + 490,
+                        .width = controls_pos.width - 20,
+                        .height = 30,
+                    },
                     "#8#Submit",
                 )) {
-                    std.debug.print("Adding body at position: {}, {}, {} with velocity: {}, {}, {}\n", .{
-                        state.new_body.position.x,
-                        state.new_body.position.y,
-                        state.new_body.position.z,
-                        state.new_body.velocity.x,
-                        state.new_body.velocity.y,
-                        state.new_body.velocity.z,
-                    });
                     try state.add_body(Body.init(
                         state.new_body.position,
                         state.new_body.velocity,
-                        1.0,
+                        if (state.new_body.mass > 0.0) state.new_body.mass else 1.0,
                         state.new_body.color,
                     ));
                 }
