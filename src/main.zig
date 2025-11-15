@@ -17,34 +17,30 @@ const CAMERA_SPEED = 3;
 const TRAIL_LENGTH = 100;
 const TOTAL_EDITABLE_UI = 3;
 
-const CONTROLS_POS_VISIBLE: rl.Rectangle = .{
-    .x = SCREEN_WIDTH - 240,
-    .y = 10,
-    .width = 230,
-    .height = 300,
+// i hate that this is hardcoded but im not about to write a dynamic ui system rn
+const POSITIONS: [3]rl.Rectangle = .{
+    .{ .x = SCREEN_WIDTH - 230, .y = 320, .width = 50, .height = 30 },
+    .{ .x = SCREEN_WIDTH - 170, .y = 320, .width = 50, .height = 30 },
+    .{ .x = SCREEN_WIDTH - 110, .y = 320, .width = 50, .height = 30 },
 };
 
-const CONTROLS_POS_HIDDEN: rl.Rectangle = .{
-    .x = SCREEN_WIDTH - 240,
-    .y = 10,
-    .width = 230,
-    .height = 10,
-};
-
-const CONTROLS_POS_ADDING_BODY: rl.Rectangle = .{
-    .x = SCREEN_WIDTH - 240,
-    .y = 10,
-    .width = 230,
-    .height = 530,
+const controls_pos = enum(usize) {
+    VISIBLE,
+    HIDDEN,
+    ADDING_BODY,
 };
 
 const Body = struct {
-    aPosition: rl.Vector3,
-    aVelocity: rl.Vector3,
+    position: rl.Vector3,
+    velocity: rl.Vector3,
 
     mass: f32,
 
+    // i like blue
     color: rl.Color = .blue,
+
+    // velocity.length()
+    // used for velocity bar display
     raw_vel: f32 = 0.0,
 
     trail: [TRAIL_LENGTH]rl.Vector3 = undefined,
@@ -52,23 +48,24 @@ const Body = struct {
 
     pub fn init(position: rl.Vector3, velocity: rl.Vector3, mass: f32, color: rl.Color) Body {
         var body = Body{
-            .aPosition = position,
-            .aVelocity = velocity,
+            .position = position,
+            .velocity = velocity,
             .mass = mass,
             .color = color,
         };
 
-        body.raw_vel = body.aVelocity.length();
-        body.trail = [_]rl.Vector3{body.aPosition} ** TRAIL_LENGTH;
+        body.raw_vel = body.velocity.length();
+        body.trail = [_]rl.Vector3{body.position} ** TRAIL_LENGTH;
         return body;
     }
 
     pub fn update_trail(self: *Body) void {
-        self.trail[self.trail_index] = self.aPosition;
+        self.trail[self.trail_index] = self.position;
         self.trail_index = (self.trail_index + 1) % TRAIL_LENGTH;
     }
 };
 
+// literally every variable related to the state of the simulation
 const State = struct {
     allocator: std.mem.Allocator,
 
@@ -95,7 +92,7 @@ const State = struct {
     damping: i32,
     restitution: i32,
 
-    is_paused: bool,
+    is_playing: bool,
     is_following: bool,
     is_text_visible: bool,
     is_controls_visible: bool,
@@ -103,10 +100,14 @@ const State = struct {
 
     offset: rl.Vector3,
 
+    controls_pos: rl.Rectangle = POSITIONS[@intFromEnum(controls_pos.VISIBLE)],
+
+    // i hate this too but idk
+    // the valueBoxFloat api needs a [:0]u8 for the string input and it pmo
     new_body: struct {
-        position: rl.Vector3,
-        velocity: rl.Vector3,
-        mass: f32,
+        position: rl.Vector3 = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
+        velocity: rl.Vector3 = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
+        mass: f32 = 1.0,
 
         pos_x_buffer: [64]u8,
         pos_y_buffer: [64]u8,
@@ -140,16 +141,13 @@ const State = struct {
             .simulations_per_frame = 1,
             .damping = 999,
             .restitution = 999,
-            .is_paused = true,
+            .is_playing = false,
             .is_following = false,
             .is_text_visible = true,
             .is_controls_visible = true,
             .is_adding_body = false,
             .offset = rl.Vector3{ .x = 0.0, .y = 20.0, .z = 20.0 },
             .new_body = .{
-                .position = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
-                .velocity = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
-                .mass = 1.0,
                 .pos_x_buffer = .{'0'} ++ .{0} ** 63,
                 .pos_y_buffer = .{'0'} ++ .{0} ** 63,
                 .pos_z_buffer = .{'0'} ++ .{0} ** 63,
@@ -161,7 +159,7 @@ const State = struct {
         };
     }
 
-    pub fn post_init(self: *State) void {
+    pub fn initialize_strings(self: *State) void {
         self.new_body.pos_x_str = self.new_body.pos_x_buffer[0..1 :0];
         self.new_body.pos_y_str = self.new_body.pos_y_buffer[0..1 :0];
         self.new_body.pos_z_str = self.new_body.pos_z_buffer[0..1 :0];
@@ -187,8 +185,19 @@ const State = struct {
         self.focused_body_index = self.body_count + 1;
         self.velocity_box_height = @intCast((10 * (self.body_count + 1)) + (20 * self.body_count));
     }
+
+    pub fn toggle_is_controls_visible(self: *State) void {
+        self.is_controls_visible = !self.is_controls_visible;
+        self.controls_pos = POSITIONS[@intFromEnum(if (self.is_controls_visible) controls_pos.VISIBLE else controls_pos.HIDDEN)];
+    }
+
+    pub fn toggle_is_adding_body(self: *State) void {
+        self.is_adding_body = !self.is_adding_body;
+        self.controls_pos = POSITIONS[@intFromEnum(if (!self.is_adding_body) controls_pos.VISIBLE else controls_pos.ADDING_BODY)];
+    }
 };
 
+// yoinked from some raylib example
 fn hex_to_color(hex: i32) rl.Color {
     return rl.Color{
         .r = @intCast((hex >> 24) & 0xFF),
@@ -212,26 +221,26 @@ fn simulate(bodies: *std.ArrayList(Body), options: struct {
             if (i != j) {
                 if (options.allow_collisions and
                     rl.checkCollisionSpheres(
-                        body.aPosition,
+                        body.position,
                         RADIUS,
-                        other_body.aPosition,
+                        other_body.position,
                         RADIUS,
                     ))
                 {
-                    const n = other_body.aPosition.subtract(body.aPosition).normalize();
-                    const relative_velocity = other_body.aVelocity.subtract(body.aVelocity);
+                    const n = other_body.position.subtract(body.position).normalize();
+                    const relative_velocity = other_body.velocity.subtract(body.velocity);
                     const velocity_along_normal = relative_velocity.dotProduct(n);
 
                     if (velocity_along_normal < 0) {
                         const impulse = (impulse_coefficient * velocity_along_normal) / (body.mass + other_body.mass);
-                        body.aVelocity = body.aVelocity.add(n.scale(impulse * other_body.mass));
-                        other_body.aVelocity = other_body.aVelocity.subtract(n.scale(impulse * body.mass));
+                        body.velocity = body.velocity.add(n.scale(impulse * other_body.mass));
+                        other_body.velocity = other_body.velocity.subtract(n.scale(impulse * body.mass));
                     }
                 } else {
                     const direction = rl.Vector3{
-                        .x = other_body.aPosition.x - body.aPosition.x,
-                        .y = other_body.aPosition.y - body.aPosition.y,
-                        .z = other_body.aPosition.z - body.aPosition.z,
+                        .x = other_body.position.x - body.position.x,
+                        .y = other_body.position.y - body.position.y,
+                        .z = other_body.position.z - body.position.z,
                     };
                     const distance = direction.length();
 
@@ -242,13 +251,12 @@ fn simulate(bodies: *std.ArrayList(Body), options: struct {
             }
         }
         const acceleration = force.scale(1 / body.mass);
-        body.aVelocity = body.aVelocity.add(acceleration);
-        body.aVelocity = body.aVelocity.scale(damping_factor);
-        body.raw_vel = body.aVelocity.length();
+        body.velocity = body.velocity.add(acceleration).scale(damping_factor);
+        body.raw_vel = body.velocity.length();
     }
 
     for (bodies.items) |*body| {
-        body.aPosition = body.aPosition.add(body.aVelocity);
+        body.position = body.position.add(body.velocity);
     }
 }
 
@@ -287,6 +295,8 @@ pub fn main() !void {
     var initial_position = try std.ArrayList(Body).initCapacity(allocator, 3);
     defer initial_position.deinit(allocator);
 
+    // chatgpt lied to me about stable orbits existing in the 3 body problem
+    // too lazy to find better ones tho so whatever
     try initial_position.append(allocator, Body.init(
         rl.Vector3{ .x = 20.0, .y = 0.0, .z = 0.0 },
         rl.Vector3{ .x = 0.0, .y = 0.0, .z = -0.17 },
@@ -334,14 +344,13 @@ pub fn main() !void {
     const text_color = hex_to_color(text_color_raw);
 
     var state = State.init(allocator);
-    state.post_init();
+    state.initialize_strings();
+    defer state.deinit();
 
     try reset(&state.bodies, initial_position, allocator);
     state.update_body_count_props();
 
     rl.setTargetFPS(TARGET_FPS);
-
-    var controls_pos = CONTROLS_POS_VISIBLE;
 
     while (!rl.windowShouldClose()) {
         var update_target = if (state.is_following and state.focused_body_index < state.body_count)
@@ -359,7 +368,7 @@ pub fn main() !void {
         if (rl.isKeyPressed(.left)) state.focused_body_index = (state.focused_body_index + state.body_count) % (state.body_count + 1);
         if (rl.isKeyPressed(.right)) state.focused_body_index = (state.focused_body_index + 1) % (state.body_count + 1);
 
-        if (rl.isKeyPressed(.p)) state.is_paused = !state.is_paused;
+        if (rl.isKeyPressed(.p)) state.is_playing = !state.is_playing;
         if (rl.isKeyPressed(.r)) try reset(&state.bodies, initial_position, allocator);
 
         if (rl.isKeyPressed(.tab)) {
@@ -372,18 +381,15 @@ pub fn main() !void {
         if (rl.isKeyPressed(.f)) {
             state.is_following = !state.is_following;
             if (state.is_following and state.focused_body_index < state.body_count) {
-                camera.target = state.bodies.items[state.focused_body_index].aPosition;
-                camera.position = state.bodies.items[state.focused_body_index].aPosition.add(state.offset);
+                camera.target = state.bodies.items[state.focused_body_index].position;
+                camera.position = state.bodies.items[state.focused_body_index].position.add(state.offset);
             }
         }
 
         if (rl.isKeyPressed(.u)) state.is_text_visible = !state.is_text_visible;
-        if (rl.isKeyPressed(.c)) {
-            state.is_controls_visible = !state.is_controls_visible;
-            controls_pos = if (state.is_controls_visible) CONTROLS_POS_VISIBLE else CONTROLS_POS_HIDDEN;
-        }
+        if (rl.isKeyPressed(.c)) state.toggle_is_controls_visible();
 
-        if (!state.is_paused) {
+        if (state.is_playing) {
             if (state.simulations_per_frame > 0) {
                 for (0..state.simulations_per_frame) |_| {
                     simulate(&state.bodies, .{
@@ -395,12 +401,12 @@ pub fn main() !void {
         }
 
         camera.target = if (state.focused_body_index < state.body_count)
-            state.bodies.items[state.focused_body_index].aPosition
+            state.bodies.items[state.focused_body_index].position
         else
             rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 };
 
         camera.position = if (state.is_following and state.focused_body_index < state.body_count)
-            state.bodies.items[state.focused_body_index].aPosition.add(state.offset)
+            state.bodies.items[state.focused_body_index].position.add(state.offset)
         else
             camera.position;
 
@@ -411,7 +417,7 @@ pub fn main() !void {
 
         for (state.bodies.items, 0..) |*body, i| {
             body.update_trail();
-            rl.drawSphere(body.aPosition, RADIUS, body.color);
+            rl.drawSphere(body.position, RADIUS, body.color);
 
             for (0..TRAIL_LENGTH - 1) |j| {
                 const index = (body.trail_index + j) % TRAIL_LENGTH;
@@ -432,7 +438,7 @@ pub fn main() !void {
             }
 
             if (i == state.focused_body_index) {
-                rl.drawSphereWires(body.aPosition, RADIUS * 1.2, 5, 8, text_color);
+                rl.drawSphereWires(body.position, RADIUS * 1.2, 5, 8, text_color);
             }
         }
 
@@ -441,13 +447,13 @@ pub fn main() !void {
         rl.endMode3D();
 
         if (state.is_text_visible) {
-            _ = rg.groupBox(controls_pos, "Controls (c)");
+            _ = rg.groupBox(state.controls_pos, "Controls (c)");
 
             if (state.is_controls_visible) {
                 _ = .{ rg.spinner(
                     .{
-                        .x = controls_pos.x + controls_pos.width - 110,
-                        .y = controls_pos.y + 20,
+                        .x = state.controls_pos.x + state.controls_pos.width - 110,
+                        .y = state.controls_pos.y + 20,
                         .width = 100,
                         .height = 30,
                     },
@@ -458,8 +464,8 @@ pub fn main() !void {
                     state.focused_ui_element == .SIMS_PER_FRAME,
                 ), rg.spinner(
                     .{
-                        .x = controls_pos.x + controls_pos.width - 110,
-                        .y = controls_pos.y + 60,
+                        .x = state.controls_pos.x + state.controls_pos.width - 110,
+                        .y = state.controls_pos.y + 60,
                         .width = 100,
                         .height = 30,
                     },
@@ -470,8 +476,8 @@ pub fn main() !void {
                     state.focused_ui_element == .DAMPING,
                 ), rg.spinner(
                     .{
-                        .x = controls_pos.x + controls_pos.width - 110,
-                        .y = controls_pos.y + 100,
+                        .x = state.controls_pos.x + state.controls_pos.width - 110,
+                        .y = state.controls_pos.y + 100,
                         .width = 100,
                         .height = 30,
                     },
@@ -484,58 +490,54 @@ pub fn main() !void {
 
                 if (rg.button(
                     .{
-                        .x = controls_pos.x + 10,
-                        .y = controls_pos.y + 140,
-                        .width = controls_pos.width - 20,
-                        .height = 30,
-                    },
-                    if (state.is_paused) "#131#Play" else "#132#Pause",
-                ))
-                    state.is_paused = !state.is_paused;
-
-                if (rg.button(
-                    .{
-                        .x = controls_pos.x + 10,
-                        .y = controls_pos.y + 180,
-                        .width = controls_pos.width - 20,
+                        .x = state.controls_pos.x + 10,
+                        .y = state.controls_pos.y + 180,
+                        .width = state.controls_pos.width - 20,
                         .height = 30,
                     },
                     "#211#Reset",
                 ))
                     try reset(&state.bodies, initial_position, allocator);
 
-                if (rg.button(
+                _ = rg.checkBox(
                     .{
-                        .x = controls_pos.x + 10,
-                        .y = controls_pos.y + 220,
-                        .width = controls_pos.width - 20,
+                        .x = state.controls_pos.x + 10,
+                        .y = state.controls_pos.y + 140,
+                        .width = 30,
+                        .height = 30,
+                    },
+                    "#131#Playing?",
+                    &state.is_playing,
+                );
+
+                _ = rg.checkBox(
+                    .{
+                        .x = state.controls_pos.x + 120,
+                        .y = state.controls_pos.y + 140,
+                        .width = 30,
                         .height = 30,
                     },
                     if (state.is_following) "#113#Unfollow" else "#112#Follow",
-                ))
-                    state.is_following = !state.is_following;
+                    &state.is_following,
+                );
 
                 if (rg.button(
                     .{
-                        .x = controls_pos.x + 10,
-                        .y = controls_pos.y + 260,
-                        .width = controls_pos.width - 20,
+                        .x = state.controls_pos.x + 10,
+                        .y = state.controls_pos.y + 260,
+                        .width = state.controls_pos.width - 20,
                         .height = 30,
                     },
                     "#214#Add Body",
-                )) {
-                    // create ui to add a body
-                    state.is_adding_body = !state.is_adding_body;
-                    controls_pos = if (!state.is_adding_body) CONTROLS_POS_VISIBLE else CONTROLS_POS_ADDING_BODY;
-                }
+                )) state.toggle_is_adding_body();
             }
 
             if (state.is_adding_body) {
                 _ = rg.groupBox(
                     rl.Rectangle{
-                        .x = controls_pos.x + 10,
-                        .y = controls_pos.y + 300,
-                        .width = controls_pos.width - 20,
+                        .x = state.controls_pos.x + 10,
+                        .y = state.controls_pos.y + 300,
+                        .width = state.controls_pos.width - 20,
                         .height = 50,
                     },
                     "Position (x,y,z)",
@@ -543,9 +545,9 @@ pub fn main() !void {
 
                 if (rg.valueBoxFloat(
                     .{
-                        .x = controls_pos.x + 20,
-                        .y = controls_pos.y + 310,
-                        .width = (controls_pos.width - 40) / 3 - 5,
+                        .x = state.controls_pos.x + 20,
+                        .y = state.controls_pos.y + 310,
+                        .width = (state.controls_pos.width - 40) / 3 - 5,
                         .height = 30,
                     },
                     "",
@@ -558,9 +560,9 @@ pub fn main() !void {
 
                 if (rg.valueBoxFloat(
                     .{
-                        .x = controls_pos.x + 25 + (controls_pos.width - 40) / 3,
-                        .y = controls_pos.y + 310,
-                        .width = (controls_pos.width - 40) / 3 - 5,
+                        .x = state.controls_pos.x + 25 + (state.controls_pos.width - 40) / 3,
+                        .y = state.controls_pos.y + 310,
+                        .width = (state.controls_pos.width - 40) / 3 - 5,
                         .height = 30,
                     },
                     "",
@@ -573,9 +575,9 @@ pub fn main() !void {
 
                 if (rg.valueBoxFloat(
                     .{
-                        .x = controls_pos.x + 30 + 2 * (controls_pos.width - 40) / 3,
-                        .y = controls_pos.y + 310,
-                        .width = (controls_pos.width - 40) / 3 - 5,
+                        .x = state.controls_pos.x + 30 + 2 * (state.controls_pos.width - 40) / 3,
+                        .y = state.controls_pos.y + 310,
+                        .width = (state.controls_pos.width - 40) / 3 - 5,
                         .height = 30,
                     },
                     "",
@@ -588,9 +590,9 @@ pub fn main() !void {
 
                 _ = rg.groupBox(
                     rl.Rectangle{
-                        .x = controls_pos.x + 10,
-                        .y = controls_pos.y + 360,
-                        .width = controls_pos.width - 20,
+                        .x = state.controls_pos.x + 10,
+                        .y = state.controls_pos.y + 360,
+                        .width = state.controls_pos.width - 20,
                         .height = 50,
                     },
                     "Velocity (x,y,z)",
@@ -598,9 +600,9 @@ pub fn main() !void {
 
                 if (rg.valueBoxFloat(
                     .{
-                        .x = controls_pos.x + 20,
-                        .y = controls_pos.y + 370,
-                        .width = (controls_pos.width - 40) / 3 - 5,
+                        .x = state.controls_pos.x + 20,
+                        .y = state.controls_pos.y + 370,
+                        .width = (state.controls_pos.width - 40) / 3 - 5,
                         .height = 30,
                     },
                     "",
@@ -613,9 +615,9 @@ pub fn main() !void {
 
                 if (rg.valueBoxFloat(
                     .{
-                        .x = controls_pos.x + 25 + (controls_pos.width - 40) / 3,
-                        .y = controls_pos.y + 370,
-                        .width = (controls_pos.width - 40) / 3 - 5,
+                        .x = state.controls_pos.x + 25 + (state.controls_pos.width - 40) / 3,
+                        .y = state.controls_pos.y + 370,
+                        .width = (state.controls_pos.width - 40) / 3 - 5,
                         .height = 30,
                     },
                     "",
@@ -628,9 +630,9 @@ pub fn main() !void {
 
                 if (rg.valueBoxFloat(
                     .{
-                        .x = controls_pos.x + 30 + 2 * (controls_pos.width - 40) / 3,
-                        .y = controls_pos.y + 370,
-                        .width = (controls_pos.width - 40) / 3 - 5,
+                        .x = state.controls_pos.x + 30 + 2 * (state.controls_pos.width - 40) / 3,
+                        .y = state.controls_pos.y + 370,
+                        .width = (state.controls_pos.width - 40) / 3 - 5,
                         .height = 30,
                     },
                     "",
@@ -643,9 +645,9 @@ pub fn main() !void {
 
                 _ = rg.colorPicker(
                     rl.Rectangle{
-                        .x = controls_pos.x + 10,
-                        .y = controls_pos.y + 420,
-                        .width = (controls_pos.width - 20) / 2 - 25,
+                        .x = state.controls_pos.x + 10,
+                        .y = state.controls_pos.y + 420,
+                        .width = (state.controls_pos.width - 20) / 2 - 25,
                         .height = 60,
                     },
                     "Color",
@@ -654,9 +656,9 @@ pub fn main() !void {
 
                 if (rg.valueBoxFloat(
                     .{
-                        .x = controls_pos.x + 40 + (controls_pos.width - 20) / 2,
-                        .y = controls_pos.y + 420,
-                        .width = (controls_pos.width - 20) / 2 - 30,
+                        .x = state.controls_pos.x + 40 + (state.controls_pos.width - 20) / 2,
+                        .y = state.controls_pos.y + 420,
+                        .width = (state.controls_pos.width - 20) / 2 - 30,
                         .height = 60,
                     },
                     "Mass",
@@ -669,9 +671,9 @@ pub fn main() !void {
 
                 if (rg.button(
                     .{
-                        .x = controls_pos.x + 10,
-                        .y = controls_pos.y + 490,
-                        .width = controls_pos.width - 20,
+                        .x = state.controls_pos.x + 10,
+                        .y = state.controls_pos.y + 490,
+                        .width = state.controls_pos.width - 20,
                         .height = 30,
                     },
                     "#8#Submit",
