@@ -19,9 +19,9 @@ const TOTAL_EDITABLE_UI = 3;
 
 // i hate that this is hardcoded but im not about to write a dynamic ui system rn
 const POSITIONS: [3]rl.Rectangle = .{
-    .{ .x = SCREEN_WIDTH - 240, .y = 10, .width = 230, .height = 300 },
-    .{ .x = SCREEN_WIDTH - 240, .y = 10, .width = 230, .height = 10 },
-    .{ .x = SCREEN_WIDTH - 240, .y = 10, .width = 230, .height = 530 },
+    .{ .x = SCREEN_WIDTH - 240, .y = 10, .width = 230, .height = 290 }, // VISIBLE
+    .{ .x = SCREEN_WIDTH - 240, .y = 10, .width = 230, .height = 10 }, // HIDDEN
+    .{ .x = SCREEN_WIDTH - 240, .y = 10, .width = 230, .height = 520 }, // ADDING_BODY
 };
 
 const ControlsPos = enum(usize) {
@@ -116,6 +116,28 @@ const EditingBody = struct {
     }
 };
 
+const UISizing = struct {
+    base_x_offset: f32, // state.controls_pos.x + 10;
+    base_x_offset_spinner: f32, // = state.controls_pos.x + 120;
+
+    base_y_offset: f32, // = state.controls_pos.y + 10;
+
+    base_height: f32, // = 30.0;
+
+    base_width: f32, // = 100.0;
+    base_width_full: f32, // = state.controls_pos.width - 20;
+
+    padding: f32, // = 10.0;
+
+    position_y_offset: f32, // get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 7);
+    velocity_y_offset: f32, // get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 8) + (2 * state.ui.padding);
+
+    third_width: f32,
+    half_width: f32,
+
+    font_size: i32,
+};
+
 // literally every variable related to the state of the simulation
 const State = struct {
     allocator: std.mem.Allocator,
@@ -156,11 +178,74 @@ const State = struct {
     // i hate this too but idk
     // the valueBoxFloat api needs a [:0]u8 for the string input and it pmo
     new_body: EditingBody = EditingBody.default(),
+    initial_position: ?std.ArrayList(Body) = null,
 
-    pub fn init(allocator: std.mem.Allocator) State {
+    colors: struct {
+        text_color: rl.Color = .white,
+        background_color: rl.Color = .black,
+    } = .{},
+
+    camera: *rl.Camera3D = undefined,
+    ui: UISizing,
+
+    pub fn init(allocator: std.mem.Allocator, options: struct {
+        initial_position: std.ArrayList(Body),
+        colors: struct {
+            text_color: rl.Color,
+            background_color: rl.Color,
+        },
+        camera: *rl.Camera3D,
+        ui_sizing: ?UISizing,
+    }) State {
         return State{
             .allocator = allocator,
+            .initial_position = options.initial_position,
+            .colors = .{
+                .text_color = options.colors.text_color,
+                .background_color = options.colors.background_color,
+            },
+            .camera = options.camera,
+            .ui = if (options.ui_sizing) |ui_| ui_ else UISizing{
+                .base_x_offset = @as(f32, @floatFromInt(SCREEN_WIDTH)) - 240.0 + 10.0,
+                .base_x_offset_spinner = @as(f32, @floatFromInt(SCREEN_WIDTH)) - 240.0 + 120.0,
+                .base_y_offset = 10.0,
+                .base_height = 30.0,
+                .base_width = 100.0,
+                .base_width_full = 230.0 - 20.0,
+                .padding = 10.0,
+                .position_y_offset = get_ui_y_offset(10.0, 30.0, 10.0, 7),
+                .velocity_y_offset = get_ui_y_offset(10.0, 30.0, 10.0, 8) + (2 * 10.0),
+                .third_width = (230.0 - 20.0 - (2.0 * 10.0)) / 3.0 - (10.0 / 2.0),
+                .half_width = (230.0 - 20.0) / 2.0,
+                .font_size = 20,
+            },
         };
+    }
+
+    pub fn update_ui_sizing(self: *State) void {
+        self.ui.base_x_offset = self.controls_pos.x + 10;
+        self.ui.base_x_offset_spinner = self.controls_pos.x + 120;
+        self.ui.base_y_offset = self.controls_pos.y + 10;
+        self.ui.base_width_full = self.controls_pos.width - 20;
+
+        self.ui.position_y_offset = get_ui_y_offset(
+            self.ui.base_y_offset,
+            self.ui.base_height,
+            self.ui.padding,
+            7,
+        );
+
+        self.ui.velocity_y_offset = get_ui_y_offset(
+            self.ui.base_y_offset,
+            self.ui.base_height,
+            self.ui.padding,
+            8,
+        ) + (2 * self.ui.padding);
+
+        self.ui.third_width =
+            (self.ui.base_width_full - (2 * self.ui.padding)) / 3 - (self.ui.padding / 2);
+
+        self.ui.half_width = self.ui.base_width_full / 2;
     }
 
     pub fn add_body(self: *State, body: Body) !void {
@@ -181,11 +266,13 @@ const State = struct {
     pub fn toggle_is_controls_visible(self: *State) void {
         self.raw_controls_pos = if (self.raw_controls_pos == .HIDDEN) .VISIBLE else .HIDDEN;
         self.controls_pos = POSITIONS[@intFromEnum(self.raw_controls_pos)];
+        self.update_ui_sizing();
     }
 
     pub fn toggle_is_adding_body(self: *State) !void {
         self.raw_controls_pos = if (self.raw_controls_pos != .ADDING_BODY) .ADDING_BODY else .VISIBLE;
         self.controls_pos = POSITIONS[@intFromEnum(self.raw_controls_pos)];
+        self.update_ui_sizing();
 
         try self.update_buffer_contents();
     }
@@ -211,6 +298,10 @@ const State = struct {
             self.new_body = EditingBody.default();
             self.new_body.initialize_strings();
         }
+    }
+
+    pub fn reset(self: *State, new: ?std.ArrayList(Body)) !void {
+        self.bodies = if (new) |new_| try new_.clone(self.allocator) else if (self.initial_position) |initial| try initial.clone(self.allocator) else std.ArrayList(Body).empty;
     }
 };
 
@@ -301,8 +392,385 @@ fn draw_grid_around(center: rl.Vector3, options: struct {
     }
 }
 
-fn reset(target: *std.ArrayList(Body), new: std.ArrayList(Body), allocator: std.mem.Allocator) !void {
-    target.* = try new.clone(allocator);
+fn get_ui_y_offset(base_y_offset: f32, base_height: f32, padding: f32, n: usize) f32 {
+    return base_y_offset + (padding + base_height) * @as(f32, @floatFromInt(n));
+}
+
+fn draw_ui(state: *State) !void {
+    if (state.is_text_visible) {
+        _ = rg.groupBox(state.controls_pos, "Controls (c)");
+
+        if (state.raw_controls_pos == .VISIBLE or state.raw_controls_pos == .ADDING_BODY) {
+            _ = .{ rg.spinner(
+                .{
+                    .x = state.ui.base_x_offset_spinner,
+                    .y = state.ui.base_y_offset,
+                    .width = state.ui.base_width,
+                    .height = state.ui.base_height,
+                },
+                "Sims/Frame",
+                @as(*i32, @ptrCast(&state.simulations_per_frame)),
+                1,
+                if (config.jailbreak) 1000 else 100,
+                state.focused_ui_element == .SIMS_PER_FRAME,
+            ), rg.spinner(
+                .{
+                    .x = state.ui.base_x_offset_spinner,
+                    .y = get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 1),
+                    .width = state.ui.base_width,
+                    .height = state.ui.base_height,
+                },
+                "Damping(/1000)",
+                &state.damping,
+                if (config.jailbreak) 0 else 900,
+                1000,
+                state.focused_ui_element == .DAMPING,
+            ), rg.spinner(
+                .{
+                    .x = state.ui.base_x_offset_spinner,
+                    .y = get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 2),
+                    .width = state.ui.base_width,
+                    .height = state.ui.base_height,
+                },
+                "Restitution(/1000)",
+                &state.restitution,
+                if (config.jailbreak) 0 else 900,
+                1000,
+                state.focused_ui_element == .RESTITUTION,
+            ) };
+
+            _ = rg.checkBox(
+                .{
+                    .x = state.ui.base_x_offset,
+                    .y = get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 3),
+                    .width = state.ui.base_height, // ts looks like a typo but i need the box to be one square
+                    .height = state.ui.base_height,
+                },
+                "#131#Playing?",
+                &state.is_playing,
+            );
+
+            _ = rg.checkBox(
+                .{
+                    // 110 is the perfect offset so that its away from the playing checkbox
+                    // but idk how to make it a const with a reasonable name
+                    .x = state.ui.base_x_offset + 110,
+                    .y = get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 3),
+                    .width = state.ui.base_height,
+                    .height = state.ui.base_height,
+                },
+                if (state.is_following) "#113#Unfollow" else "#112#Follow",
+                &state.is_following,
+            );
+
+            _ = rg.checkBox(
+                .{
+                    .x = state.ui.base_x_offset,
+                    .y = get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 4),
+                    .width = state.ui.base_height,
+                    .height = state.ui.base_height,
+                },
+                "#155#Collisions",
+                &state.is_collisions_allowed,
+            );
+
+            if (rg.button(
+                .{
+                    .x = state.ui.base_x_offset,
+                    .y = get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 5),
+                    .width = state.ui.base_width_full,
+                    .height = state.ui.base_height,
+                },
+                "#211#Reset",
+            ))
+                try state.reset(null);
+
+            if (rg.button(
+                .{
+                    .x = state.ui.base_x_offset,
+                    .y = get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 6),
+                    .width = state.ui.base_width_full,
+                    .height = state.ui.base_height,
+                },
+                if (state.focused_body_index == state.body_count) "#214#Add Body" else "#22#Edit Body",
+            )) try state.toggle_is_adding_body();
+        }
+
+        if (state.raw_controls_pos == .ADDING_BODY) {
+            _ = rg.groupBox(
+                rl.Rectangle{
+                    .x = state.ui.base_x_offset,
+                    .y = state.ui.position_y_offset,
+                    .width = state.ui.base_width_full,
+                    .height = state.ui.base_height + (2 * state.ui.padding),
+                },
+                "Position (x,y,z)",
+            );
+
+            if (rg.valueBoxFloat(
+                .{
+                    .x = state.ui.base_x_offset + state.ui.padding,
+                    .y = get_ui_y_offset(
+                        state.ui.position_y_offset + state.ui.padding,
+                        state.ui.base_height,
+                        state.ui.padding,
+                        0,
+                    ),
+                    .width = state.ui.third_width,
+                    .height = state.ui.base_height,
+                },
+                "",
+                state.new_body.pos_x_str,
+                &state.new_body.position.x,
+                state.focused_ui_element == .POS_X,
+            ) != 0) {
+                state.focused_ui_element = .POS_X;
+            }
+
+            if (rg.valueBoxFloat(
+                .{
+                    .x = state.ui.base_x_offset + state.ui.third_width + (2 * state.ui.padding),
+                    .y = get_ui_y_offset(
+                        state.ui.position_y_offset + state.ui.padding,
+                        state.ui.base_height,
+                        state.ui.padding,
+                        0,
+                    ),
+                    .width = state.ui.third_width,
+                    .height = state.ui.base_height,
+                },
+                "",
+                state.new_body.pos_y_str,
+                &state.new_body.position.y,
+                state.focused_ui_element == .POS_Y,
+            ) != 0) {
+                state.focused_ui_element = .POS_Y;
+            }
+
+            if (rg.valueBoxFloat(
+                .{
+                    .x = state.ui.base_x_offset + (2 * state.ui.third_width) + (3 * state.ui.padding),
+                    .y = get_ui_y_offset(
+                        state.ui.position_y_offset + state.ui.padding,
+                        state.ui.base_height,
+                        state.ui.padding,
+                        0,
+                    ),
+                    .width = state.ui.third_width,
+                    .height = state.ui.base_height,
+                },
+                "",
+                state.new_body.pos_z_str,
+                &state.new_body.position.z,
+                state.focused_ui_element == .POS_Z,
+            ) != 0) {
+                state.focused_ui_element = .POS_Z;
+            }
+
+            _ = rg.groupBox(
+                rl.Rectangle{
+                    .x = state.ui.base_x_offset,
+                    .y = state.ui.velocity_y_offset,
+                    .width = state.ui.base_width_full,
+                    .height = state.ui.base_height + (2 * state.ui.padding),
+                },
+                "Velocity (x,y,z)",
+            );
+
+            if (rg.valueBoxFloat(
+                .{
+                    .x = state.ui.base_x_offset + state.ui.padding,
+                    .y = state.ui.velocity_y_offset + state.ui.padding,
+                    .width = state.ui.third_width,
+                    .height = state.ui.base_height,
+                },
+                "",
+                state.new_body.vel_x_str,
+                &state.new_body.velocity.x,
+                state.focused_ui_element == .VEL_X,
+            ) != 0) {
+                state.focused_ui_element = .VEL_X;
+            }
+
+            if (rg.valueBoxFloat(
+                .{
+                    .x = state.ui.base_x_offset + state.ui.third_width + (2 * state.ui.padding),
+                    .y = state.ui.velocity_y_offset + state.ui.padding,
+                    .width = state.ui.third_width,
+                    .height = state.ui.base_height,
+                },
+                "",
+                state.new_body.vel_y_str,
+                &state.new_body.velocity.y,
+                state.focused_ui_element == .VEL_Y,
+            ) != 0) {
+                state.focused_ui_element = .VEL_Y;
+            }
+
+            if (rg.valueBoxFloat(
+                .{
+                    .x = state.ui.base_x_offset + (2 * state.ui.third_width) + (3 * state.ui.padding),
+                    .y = state.ui.velocity_y_offset + state.ui.padding,
+                    .width = state.ui.third_width,
+                    .height = state.ui.base_height,
+                },
+                "",
+                state.new_body.vel_z_str,
+                &state.new_body.velocity.z,
+                state.focused_ui_element == .VEL_Z,
+            ) != 0) {
+                state.focused_ui_element = .VEL_Z;
+            }
+
+            _ = rg.colorPicker(
+                rl.Rectangle{
+                    .x = state.ui.base_x_offset,
+                    .y = get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 9) + (4 * state.ui.padding),
+                    .width = state.ui.half_width - 25,
+                    .height = 2 * state.ui.base_height,
+                },
+                "Color",
+                &state.new_body.color,
+            );
+
+            if (rg.valueBoxFloat(
+                .{
+                    .x = state.ui.base_x_offset + state.ui.half_width + (3 * state.ui.padding),
+                    .y = get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 9) + (4 * state.ui.padding),
+                    .width = (state.controls_pos.width - 20) / 2 - 30,
+                    .height = 2 * state.ui.base_height,
+                },
+                "Mass",
+                state.new_body.mass_str,
+                &state.new_body.mass,
+                state.focused_ui_element == .MASS,
+            ) != 0) {
+                state.focused_ui_element = .MASS;
+            }
+
+            if (rg.button(
+                .{
+                    .x = state.ui.base_x_offset,
+                    .y = get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 10) + state.ui.base_height + (4 * state.ui.padding),
+                    .width = state.ui.base_width_full,
+                    .height = state.ui.base_height,
+                },
+                "#8#Submit",
+            )) {
+                if (state.focused_body_index == state.body_count) {
+                    try state.add_body(Body.init(
+                        state.new_body.position,
+                        state.new_body.velocity,
+                        if (state.new_body.mass > 0.0) state.new_body.mass else 1.0,
+                        state.new_body.color,
+                    ));
+                } else {
+                    state.bodies.items[state.focused_body_index] = Body.init(
+                        state.new_body.position,
+                        state.new_body.velocity,
+                        if (state.new_body.mass > 0.0) state.new_body.mass else 1.0,
+                        state.new_body.color,
+                    );
+                }
+            }
+        }
+
+        rl.drawText(
+            "3-Body Problem Simulation",
+            @intFromFloat(state.ui.padding),
+            @intFromFloat(state.ui.padding),
+            state.ui.font_size,
+            state.colors.text_color,
+        );
+
+        var campos_buffer: [64]u8 = undefined;
+        var looking_at_buffer: [64]u8 = undefined;
+
+        rl.drawText(
+            try std.fmt.bufPrintZ(
+                &campos_buffer,
+                "Camera: {}, {}, {}",
+                if (state.is_following and state.focused_body_index < state.body_count) .{
+                    state.offset.x,
+                    state.offset.y,
+                    state.offset.z,
+                } else .{
+                    state.camera.position.x,
+                    state.camera.position.y,
+                    state.camera.position.z,
+                },
+            ),
+            @intFromFloat(state.ui.padding),
+            @intFromFloat(get_ui_y_offset(
+                state.ui.padding,
+                @floatFromInt(state.ui.font_size),
+                state.ui.padding,
+                1,
+            )),
+            state.ui.font_size,
+            state.colors.text_color,
+        );
+
+        rl.drawText(
+            try std.fmt.bufPrintZ(
+                &looking_at_buffer,
+                "Looking at: {}, {}, {}",
+                .{
+                    state.camera.target.x,
+                    state.camera.target.y,
+                    state.camera.target.z,
+                },
+            ),
+            @intFromFloat(state.ui.padding),
+            @intFromFloat(get_ui_y_offset(
+                state.ui.padding,
+                @floatFromInt(state.ui.font_size),
+                state.ui.padding,
+                2,
+            )),
+            state.ui.font_size,
+            state.colors.text_color,
+        );
+
+        rl.drawFPS(@intFromFloat(state.ui.padding), SCREEN_HEIGHT - 30);
+
+        _ = rg.groupBox(
+            rl.Rectangle{
+                .x = SCREEN_WIDTH - 180,
+                .y = @floatFromInt(SCREEN_HEIGHT - state.velocity_box_height - 10),
+                .width = 170,
+                .height = @floatFromInt(state.velocity_box_height),
+            },
+            "Velocities",
+        );
+
+        var text_left_buffer: [16]u8 = undefined;
+
+        for (state.bodies.items, 0..) |*body, i| {
+            text_left_buffer = undefined;
+
+            _ = rg.progressBar(
+                rl.Rectangle{
+                    .x = SCREEN_WIDTH - 120,
+                    .y = @floatFromInt(SCREEN_HEIGHT - state.velocity_box_height + @as(i32, @intCast(i * 30))),
+                    .width = 80,
+                    .height = 20,
+                },
+                try std.fmt.bufPrintZ(&text_left_buffer, "Body {}", .{i + 1}),
+                ">5",
+                &body.raw_vel,
+                0.0,
+                5.0,
+            );
+
+            _ = rl.drawCircle(
+                SCREEN_WIDTH - 115 + (@as(i32, @intFromFloat((@min(body.raw_vel, 5.0) / 5.0) * 80.0))),
+                SCREEN_HEIGHT - state.velocity_box_height + 10 + @as(i32, @intCast(i * 30)),
+                5,
+                body.color,
+            );
+        }
+    }
 }
 
 pub fn main() !void {
@@ -360,11 +828,20 @@ pub fn main() !void {
     const text_color_raw = rg.getStyle(.control11, .{ .control = .text_color_normal });
     const text_color = hex_to_color(text_color_raw);
 
-    var state = State.init(allocator);
+    var state = State.init(allocator, .{
+        .initial_position = initial_position,
+        .colors = .{
+            .text_color = text_color,
+            .background_color = background_color,
+        },
+        .camera = &camera,
+        .ui_sizing = null,
+    });
+    state.update_ui_sizing();
     state.new_body.initialize_strings();
     defer state.deinit();
 
-    try reset(&state.bodies, initial_position, allocator);
+    try state.reset(null);
     state.update_body_count_props();
 
     rl.setTargetFPS(TARGET_FPS);
@@ -392,7 +869,7 @@ pub fn main() !void {
         }
 
         if (rl.isKeyPressed(.p)) state.is_playing = !state.is_playing;
-        if (rl.isKeyPressed(.r)) try reset(&state.bodies, initial_position, allocator);
+        if (rl.isKeyPressed(.r)) try state.reset(null);
 
         if (rl.isKeyPressed(.tab)) {
             state.focused_ui_element = if (rl.isKeyDown(.left_shift) or rl.isKeyDown(.right_shift))
@@ -470,347 +947,7 @@ pub fn main() !void {
 
         rl.endMode3D();
 
-        if (state.is_text_visible) {
-            _ = rg.groupBox(state.controls_pos, "Controls (c)");
-
-            if (state.raw_controls_pos == .VISIBLE or state.raw_controls_pos == .ADDING_BODY) {
-                _ = .{ rg.spinner(
-                    .{
-                        .x = state.controls_pos.x + state.controls_pos.width - 110,
-                        .y = state.controls_pos.y + 20,
-                        .width = 100,
-                        .height = 30,
-                    },
-                    "Sims/Frame",
-                    @as(*i32, @ptrCast(&state.simulations_per_frame)),
-                    1,
-                    if (config.jailbreak) 1000 else 100,
-                    state.focused_ui_element == .SIMS_PER_FRAME,
-                ), rg.spinner(
-                    .{
-                        .x = state.controls_pos.x + state.controls_pos.width - 110,
-                        .y = state.controls_pos.y + 60,
-                        .width = 100,
-                        .height = 30,
-                    },
-                    "Damping(/1000)",
-                    &state.damping,
-                    if (config.jailbreak) 0 else 900,
-                    1000,
-                    state.focused_ui_element == .DAMPING,
-                ), rg.spinner(
-                    .{
-                        .x = state.controls_pos.x + state.controls_pos.width - 110,
-                        .y = state.controls_pos.y + 100,
-                        .width = 100,
-                        .height = 30,
-                    },
-                    "Restitution(/1000)",
-                    &state.restitution,
-                    if (config.jailbreak) 0 else 900,
-                    1000,
-                    state.focused_ui_element == .RESTITUTION,
-                ) };
-
-                _ = rg.checkBox(
-                    .{
-                        .x = state.controls_pos.x + 10,
-                        .y = state.controls_pos.y + 140,
-                        .width = 30,
-                        .height = 30,
-                    },
-                    "#131#Playing?",
-                    &state.is_playing,
-                );
-
-                _ = rg.checkBox(
-                    .{
-                        .x = state.controls_pos.x + 120,
-                        .y = state.controls_pos.y + 140,
-                        .width = 30,
-                        .height = 30,
-                    },
-                    if (state.is_following) "#113#Unfollow" else "#112#Follow",
-                    &state.is_following,
-                );
-
-                _ = rg.checkBox(
-                    .{
-                        .x = state.controls_pos.x + 10,
-                        .y = state.controls_pos.y + 180,
-                        .width = 30,
-                        .height = 30,
-                    },
-                    "#155#Collisions",
-                    &state.is_collisions_allowed,
-                );
-
-                if (rg.button(
-                    .{
-                        .x = state.controls_pos.x + 10,
-                        .y = state.controls_pos.y + 220,
-                        .width = state.controls_pos.width - 20,
-                        .height = 30,
-                    },
-                    "#211#Reset",
-                ))
-                    try reset(&state.bodies, initial_position, allocator);
-
-                if (rg.button(
-                    .{
-                        .x = state.controls_pos.x + 10,
-                        .y = state.controls_pos.y + 260,
-                        .width = state.controls_pos.width - 20,
-                        .height = 30,
-                    },
-                    if (state.focused_body_index == state.body_count) "#214#Add Body" else "#22#Edit Body",
-                )) try state.toggle_is_adding_body();
-            }
-
-            if (state.raw_controls_pos == .ADDING_BODY) {
-                _ = rg.groupBox(
-                    rl.Rectangle{
-                        .x = state.controls_pos.x + 10,
-                        .y = state.controls_pos.y + 300,
-                        .width = state.controls_pos.width - 20,
-                        .height = 50,
-                    },
-                    "Position (x,y,z)",
-                );
-
-                if (rg.valueBoxFloat(
-                    .{
-                        .x = state.controls_pos.x + 20,
-                        .y = state.controls_pos.y + 310,
-                        .width = (state.controls_pos.width - 40) / 3 - 5,
-                        .height = 30,
-                    },
-                    "",
-                    state.new_body.pos_x_str,
-                    &state.new_body.position.x,
-                    state.focused_ui_element == .POS_X,
-                ) != 0) {
-                    state.focused_ui_element = .POS_X;
-                }
-
-                if (rg.valueBoxFloat(
-                    .{
-                        .x = state.controls_pos.x + 25 + (state.controls_pos.width - 40) / 3,
-                        .y = state.controls_pos.y + 310,
-                        .width = (state.controls_pos.width - 40) / 3 - 5,
-                        .height = 30,
-                    },
-                    "",
-                    state.new_body.pos_y_str,
-                    &state.new_body.position.y,
-                    state.focused_ui_element == .POS_Y,
-                ) != 0) {
-                    state.focused_ui_element = .POS_Y;
-                }
-
-                if (rg.valueBoxFloat(
-                    .{
-                        .x = state.controls_pos.x + 30 + 2 * (state.controls_pos.width - 40) / 3,
-                        .y = state.controls_pos.y + 310,
-                        .width = (state.controls_pos.width - 40) / 3 - 5,
-                        .height = 30,
-                    },
-                    "",
-                    state.new_body.pos_z_str,
-                    &state.new_body.position.z,
-                    state.focused_ui_element == .POS_Z,
-                ) != 0) {
-                    state.focused_ui_element = .POS_Z;
-                }
-
-                _ = rg.groupBox(
-                    rl.Rectangle{
-                        .x = state.controls_pos.x + 10,
-                        .y = state.controls_pos.y + 360,
-                        .width = state.controls_pos.width - 20,
-                        .height = 50,
-                    },
-                    "Velocity (x,y,z)",
-                );
-
-                if (rg.valueBoxFloat(
-                    .{
-                        .x = state.controls_pos.x + 20,
-                        .y = state.controls_pos.y + 370,
-                        .width = (state.controls_pos.width - 40) / 3 - 5,
-                        .height = 30,
-                    },
-                    "",
-                    state.new_body.vel_x_str,
-                    &state.new_body.velocity.x,
-                    state.focused_ui_element == .VEL_X,
-                ) != 0) {
-                    state.focused_ui_element = .VEL_X;
-                }
-
-                if (rg.valueBoxFloat(
-                    .{
-                        .x = state.controls_pos.x + 25 + (state.controls_pos.width - 40) / 3,
-                        .y = state.controls_pos.y + 370,
-                        .width = (state.controls_pos.width - 40) / 3 - 5,
-                        .height = 30,
-                    },
-                    "",
-                    state.new_body.vel_y_str,
-                    &state.new_body.velocity.y,
-                    state.focused_ui_element == .VEL_Y,
-                ) != 0) {
-                    state.focused_ui_element = .VEL_Y;
-                }
-
-                if (rg.valueBoxFloat(
-                    .{
-                        .x = state.controls_pos.x + 30 + 2 * (state.controls_pos.width - 40) / 3,
-                        .y = state.controls_pos.y + 370,
-                        .width = (state.controls_pos.width - 40) / 3 - 5,
-                        .height = 30,
-                    },
-                    "",
-                    state.new_body.vel_z_str,
-                    &state.new_body.velocity.z,
-                    state.focused_ui_element == .VEL_Z,
-                ) != 0) {
-                    state.focused_ui_element = .VEL_Z;
-                }
-
-                _ = rg.colorPicker(
-                    rl.Rectangle{
-                        .x = state.controls_pos.x + 10,
-                        .y = state.controls_pos.y + 420,
-                        .width = (state.controls_pos.width - 20) / 2 - 25,
-                        .height = 60,
-                    },
-                    "Color",
-                    &state.new_body.color,
-                );
-
-                if (rg.valueBoxFloat(
-                    .{
-                        .x = state.controls_pos.x + 40 + (state.controls_pos.width - 20) / 2,
-                        .y = state.controls_pos.y + 420,
-                        .width = (state.controls_pos.width - 20) / 2 - 30,
-                        .height = 60,
-                    },
-                    "Mass",
-                    state.new_body.mass_str,
-                    &state.new_body.mass,
-                    state.focused_ui_element == .MASS,
-                ) != 0) {
-                    state.focused_ui_element = .MASS;
-                }
-
-                if (rg.button(
-                    .{
-                        .x = state.controls_pos.x + 10,
-                        .y = state.controls_pos.y + 490,
-                        .width = state.controls_pos.width - 20,
-                        .height = 30,
-                    },
-                    "#8#Submit",
-                )) {
-                    if (state.focused_body_index == state.body_count) {
-                        try state.add_body(Body.init(
-                            state.new_body.position,
-                            state.new_body.velocity,
-                            if (state.new_body.mass > 0.0) state.new_body.mass else 1.0,
-                            state.new_body.color,
-                        ));
-                    } else {
-                        state.bodies.items[state.focused_body_index] = Body.init(
-                            state.new_body.position,
-                            state.new_body.velocity,
-                            if (state.new_body.mass > 0.0) state.new_body.mass else 1.0,
-                            state.new_body.color,
-                        );
-                    }
-                }
-            }
-
-            rl.drawText("3-Body Problem Simulation", 10, 10, 20, text_color);
-
-            var campos_buffer: [64]u8 = undefined;
-            var looking_at_buffer: [64]u8 = undefined;
-
-            rl.drawText(
-                try std.fmt.bufPrintZ(
-                    &campos_buffer,
-                    "Camera: {}, {}, {}",
-                    if (state.is_following and state.focused_body_index < state.body_count) .{
-                        state.offset.x,
-                        state.offset.y,
-                        state.offset.z,
-                    } else .{
-                        camera.position.x,
-                        camera.position.y,
-                        camera.position.z,
-                    },
-                ),
-                10,
-                40,
-                20,
-                text_color,
-            );
-
-            rl.drawText(
-                try std.fmt.bufPrintZ(
-                    &looking_at_buffer,
-                    "Looking at: {}, {}, {}",
-                    .{
-                        camera.target.x,
-                        camera.target.y,
-                        camera.target.z,
-                    },
-                ),
-                10,
-                70,
-                20,
-                text_color,
-            );
-
-            rl.drawFPS(10, SCREEN_HEIGHT - 30);
-
-            _ = rg.groupBox(
-                rl.Rectangle{
-                    .x = SCREEN_WIDTH - 180,
-                    .y = @floatFromInt(SCREEN_HEIGHT - state.velocity_box_height - 10),
-                    .width = 170,
-                    .height = @floatFromInt(state.velocity_box_height),
-                },
-                "Velocities",
-            );
-
-            var text_left_buffer: [16]u8 = undefined;
-
-            for (state.bodies.items, 0..) |*body, i| {
-                text_left_buffer = undefined;
-
-                _ = rg.progressBar(
-                    rl.Rectangle{
-                        .x = SCREEN_WIDTH - 120,
-                        .y = @floatFromInt(SCREEN_HEIGHT - state.velocity_box_height + @as(i32, @intCast(i * 30))),
-                        .width = 80,
-                        .height = 20,
-                    },
-                    try std.fmt.bufPrintZ(&text_left_buffer, "Body {}", .{i + 1}),
-                    ">5",
-                    &body.raw_vel,
-                    0.0,
-                    5.0,
-                );
-
-                _ = rl.drawCircle(
-                    SCREEN_WIDTH - 115 + (@as(i32, @intFromFloat((@min(body.raw_vel, 5.0) / 5.0) * 80.0))),
-                    SCREEN_HEIGHT - state.velocity_box_height + 10 + @as(i32, @intCast(i * 30)),
-                    5,
-                    body.color,
-                );
-            }
-        }
+        try draw_ui(&state);
 
         rl.endDrawing();
     }
