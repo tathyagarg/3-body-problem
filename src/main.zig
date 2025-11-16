@@ -868,7 +868,7 @@ pub fn main() !void {
             try state.update_buffer_contents();
         }
 
-        if (rl.isKeyPressed(.p)) state.is_playing = !state.is_playing;
+        if (rl.isKeyPressed(.p) or rl.isKeyPressed(.space)) state.is_playing = !state.is_playing;
         if (rl.isKeyPressed(.r)) try state.reset(null);
 
         if (rl.isKeyPressed(.tab)) {
