@@ -1,3 +1,5 @@
+# 3-Body Problem Simulation
+
 <div align="center">
 
   <img src="https://img.shields.io/badge/Zig-%23F7A41D.svg?style=for-the-badge&logo=zig&logoColor=white"/>
@@ -9,9 +11,9 @@
 
 <hr/>
 
-# About
+## About
 
-![Preview](assets/preview.png)
+![Preview](assets/github/preview.png)
 
 This project is a simple simulation of the 3-body problem, which is a classic problem in physics and mathematics. The simulation is implemented using the Zig programming language and the Raylib graphics library. We use classical Newtonian mechanics to simulate the gravitational interactions between three bodies in space.
 
@@ -39,7 +41,8 @@ You only need [Zig](https://ziglang.org/download/) (version 0.15.0 or later) ins
 
 3. A window should open displaying the simulation of the 3-body problem.
 
-> [!note] Extra flags 
+> [!TIP]
+> Extra flags:
 > - `-Doptimize=ReleaseFast` is used to optimize the build for better performance.
 > - `-Djailbreak` can be added to allow for a larger range of settings values (make sure to use it responsibly).
 > - `-Dscreen_width=WIDTH` and `-Dscreen_height=HEIGHT` can be used to set custom screen dimensions.
