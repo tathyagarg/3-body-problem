@@ -11,6 +11,21 @@
 
 <hr/>
 
+<details>
+<summary><b>Table of Contents</b></summary>
+
+- [About](#about)
+- [Getting Started](#getting-started)
+  - [Prerequisites](#prerequisites)
+  - [Building and Running the Simulation](#building-and-running-the-simulation)
+- [Features](#features)
+- [Controls](#controls)
+  - [Movement](#movement)
+  - [Focusing](#focusing)
+  - [Miscellaneous](#miscellaneous)
+- [License](#license)
+</details>
+
 ## About
 
 ![Preview](assets/github/preview.png)
@@ -46,6 +61,17 @@ You only need [Zig](https://ziglang.org/download/) (version 0.15.0 or later) ins
 > - `-Doptimize=ReleaseFast` is used to optimize the build for better performance.
 > - `-Djailbreak` can be added to allow for a larger range of settings values (make sure to use it responsibly).
 > - `-Dscreen_width=WIDTH` and `-Dscreen_height=HEIGHT` can be used to set custom screen dimensions.
+
+## Features
+
+- Real-time simulation of the 3-body problem using Newtonian mechanics.
+- Camera controls for navigating the simulation space.
+- UI panel for adjusting simulation parameters such as velocity damping, collision elasticity, as well as a collision toggle
+- Ability to pause, resume, and reset the simulation.
+- Focus on individual bodies to track their movement.
+- Trails to visualize the paths of the bodies.
+- Customizable initial conditions for the bodies.
+- Adding and editing bodies during runtime.
 
 ## Controls
 

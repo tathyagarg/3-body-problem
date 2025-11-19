@@ -162,8 +162,8 @@ const State = struct {
     } = .NONE,
 
     simulations_per_frame: usize = 1,
-    damping: i32 = 999,
-    restitution: i32 = 999,
+    damping: i32 = 1000,
+    restitution: i32 = 1000,
 
     is_playing: bool = false,
     is_following: bool = false,
