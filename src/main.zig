@@ -5,7 +5,6 @@ const config = @import("config");
 
 const style = @embedFile("style");
 
-// TODO: Make RADIUS dynamic
 const RADIUS = 2.5;
 
 const SCREEN_WIDTH: i32 = config.screen_width;
@@ -37,15 +36,12 @@ const Body = struct {
     velocity: rl.Vector3,
 
     mass: f32,
+    charge: f32 = 0.0,
 
-    // i like blue
     color: rl.Color = .blue,
 
-    // velocity.length()
     // used for velocity bar display
     raw_vel: f32 = 0.0,
-
-    charge: f32 = 0.0,
 
     trail: [TRAIL_LENGTH]rl.Vector3 = undefined,
     trail_index: usize = 0,
@@ -74,6 +70,7 @@ const EditingBody = struct {
     position: rl.Vector3 = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
     velocity: rl.Vector3 = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 },
     mass: f32 = 1.0,
+    charge: f32 = 0.0,
 
     pos_x_buffer: [64]u8,
     pos_y_buffer: [64]u8,
@@ -98,8 +95,6 @@ const EditingBody = struct {
     charge_str: [:0]u8 = undefined,
 
     color: rl.Color = .white,
-
-    charge: f32 = 0.0,
 
     pub fn default() EditingBody {
         return EditingBody{
@@ -343,12 +338,7 @@ fn simulate(bodies: *std.ArrayList(Body), options: struct {
         for (bodies.items, 0..) |*other_body, j| {
             if (i != j) {
                 if (options.allow_collisions and
-                    rl.checkCollisionSpheres(
-                        body.position,
-                        RADIUS,
-                        other_body.position,
-                        RADIUS,
-                    ))
+                    rl.checkCollisionSpheres(body.position, RADIUS, other_body.position, RADIUS))
                 {
                     const n = other_body.position.subtract(body.position).normalize();
                     const relative_velocity = other_body.velocity.subtract(body.velocity);
@@ -364,25 +354,19 @@ fn simulate(bodies: *std.ArrayList(Body), options: struct {
                     const distance = direction.length();
 
                     // Gravitational Force
-                    {
-                        const f = (body.mass * other_body.mass) / (distance * distance);
-                        const norm_direction = direction.normalize();
-                        force = force.add(norm_direction.scale(f));
-                    }
+                    const f = (body.mass * other_body.mass) / (distance * distance);
+                    const norm_direction = direction.normalize();
+                    force = force.add(norm_direction.scale(f));
 
                     // Electrostatic Force
-                    {
-                        const inverse_distance = 1.0 / distance;
+                    const inverse_distance = 1.0 / distance;
+                    const charge_direction = direction.normalize();
 
-                        const charge_direction = direction.normalize();
+                    const charge_product = body.charge * other_body.charge;
+                    const electrostatic_force_magnitude = COLOUMB_CONSTANT * charge_product * inverse_distance * inverse_distance;
 
-                        const charge_product = body.charge * other_body.charge;
-                        const electrostatic_force_magnitude = COLOUMB_CONSTANT * charge_product * inverse_distance * inverse_distance;
-
-                        const electrostatic_force = charge_direction.scale(electrostatic_force_magnitude / body.mass);
-
-                        force = force.add(electrostatic_force);
-                    }
+                    const electrostatic_force = charge_direction.scale(electrostatic_force_magnitude / body.mass);
+                    force = force.add(electrostatic_force);
                 }
             }
         }
@@ -480,8 +464,7 @@ fn draw_ui(state: *State) !void {
 
             _ = rg.checkBox(
                 .{
-                    // 110 is the perfect offset so that its away from the playing checkbox
-                    // but idk how to make it a const with a reasonable name
+                    // 110 is the perfect offset so that its away from the playing checkbox but idk how to make it a const with a reasonable name
                     .x = state.ui.base_x_offset + 110,
                     .y = get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 3),
                     .width = state.ui.base_height,
@@ -961,7 +944,6 @@ pub fn main() !void {
         else
             camera.position;
 
-        // Draw
         rl.beginDrawing();
         rl.clearBackground(background_color);
         rl.beginMode3D(camera);
@@ -1002,7 +984,12 @@ pub fn main() !void {
             @intFromFloat(state.controls_pos.y),
             @intFromFloat(state.controls_pos.width),
             @intFromFloat(state.controls_pos.height),
-            state.colors.background_color,
+            rl.Color{
+                .r = state.colors.background_color.r -| 10,
+                .g = state.colors.background_color.g -| 10,
+                .b = state.colors.background_color.b -| 10,
+                .a = 200,
+            },
         );
         try draw_ui(&state);
 
