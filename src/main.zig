@@ -17,11 +17,13 @@ const CAMERA_SPEED = 3;
 const TRAIL_LENGTH = 100;
 const TOTAL_EDITABLE_UI = 3;
 
+const COLOUMB_CONSTANT = -5;
+
 // i hate that this is hardcoded but im not about to write a dynamic ui system rn
 const POSITIONS: [3]rl.Rectangle = .{
     .{ .x = SCREEN_WIDTH - 240, .y = 10, .width = 230, .height = 290 }, // VISIBLE
     .{ .x = SCREEN_WIDTH - 240, .y = 10, .width = 230, .height = 10 }, // HIDDEN
-    .{ .x = SCREEN_WIDTH - 240, .y = 10, .width = 230, .height = 520 }, // ADDING_BODY
+    .{ .x = SCREEN_WIDTH - 240, .y = 10, .width = 230, .height = 560 }, // ADDING_BODY
 };
 
 const ControlsPos = enum(usize) {
@@ -43,15 +45,18 @@ const Body = struct {
     // used for velocity bar display
     raw_vel: f32 = 0.0,
 
+    charge: f32 = 0.0,
+
     trail: [TRAIL_LENGTH]rl.Vector3 = undefined,
     trail_index: usize = 0,
 
-    pub fn init(position: rl.Vector3, velocity: rl.Vector3, mass: f32, color: rl.Color) Body {
+    pub fn init(position: rl.Vector3, velocity: rl.Vector3, mass: f32, color: rl.Color, charge: f32) Body {
         var body = Body{
             .position = position,
             .velocity = velocity,
             .mass = mass,
             .color = color,
+            .charge = charge,
         };
 
         body.raw_vel = body.velocity.length();
@@ -89,7 +94,12 @@ const EditingBody = struct {
     mass_buffer: [64]u8,
     mass_str: [:0]u8 = undefined,
 
+    charge_buffer: [64]u8,
+    charge_str: [:0]u8 = undefined,
+
     color: rl.Color = .white,
+
+    charge: f32 = 0.0,
 
     pub fn default() EditingBody {
         return EditingBody{
@@ -100,6 +110,7 @@ const EditingBody = struct {
             .vel_y_buffer = .{'0'} ++ .{0} ** 63,
             .vel_z_buffer = .{'0'} ++ .{0} ** 63,
             .mass_buffer = .{'1'} ++ .{0} ** 63,
+            .charge_buffer = .{'0'} ++ .{0} ** 63,
         };
     }
 
@@ -113,6 +124,7 @@ const EditingBody = struct {
         self.vel_z_str = self.vel_z_buffer[0..1 :0];
 
         self.mass_str = self.mass_buffer[0..1 :0];
+        self.charge_str = self.charge_buffer[0..1 :0];
     }
 };
 
@@ -159,6 +171,7 @@ const State = struct {
         VEL_Y = 0x201,
         VEL_Z = 0x202,
         MASS = 0x300,
+        CHARGE = 0x301,
     } = .NONE,
 
     simulations_per_frame: usize = 1,
@@ -284,6 +297,9 @@ const State = struct {
             self.new_body.velocity = body.velocity;
             self.new_body.mass = body.mass;
             self.new_body.color = body.color;
+            self.new_body.charge = body.charge;
+
+            std.debug.print("Editing body charge: {}\n", .{body.charge});
 
             _ = try std.fmt.bufPrintZ(&self.new_body.pos_x_buffer, "{}", .{body.position.x});
             _ = try std.fmt.bufPrintZ(&self.new_body.pos_y_buffer, "{}", .{body.position.y});
@@ -294,6 +310,7 @@ const State = struct {
             _ = try std.fmt.bufPrintZ(&self.new_body.vel_z_buffer, "{}", .{body.velocity.z});
 
             _ = try std.fmt.bufPrintZ(&self.new_body.mass_buffer, "{}", .{body.mass});
+            _ = try std.fmt.bufPrintZ(&self.new_body.charge_buffer, "{}", .{body.charge});
         } else {
             self.new_body = EditingBody.default();
             self.new_body.initialize_strings();
@@ -324,7 +341,7 @@ fn simulate(bodies: *std.ArrayList(Body), options: struct {
     const damping_factor = @as(f32, @floatFromInt(options.vel_damping)) / 1000.0;
 
     for (bodies.items, 0..) |*body, i| {
-        var force = rl.Vector3{ .x = 0.0, .y = 0.0, .z = 0.0 };
+        var force = rl.Vector3.zero();
         for (bodies.items, 0..) |*other_body, j| {
             if (i != j) {
                 if (options.allow_collisions and
@@ -345,16 +362,29 @@ fn simulate(bodies: *std.ArrayList(Body), options: struct {
                         other_body.velocity = other_body.velocity.subtract(n.scale(impulse * body.mass));
                     }
                 } else {
-                    const direction = rl.Vector3{
-                        .x = other_body.position.x - body.position.x,
-                        .y = other_body.position.y - body.position.y,
-                        .z = other_body.position.z - body.position.z,
-                    };
+                    const direction = other_body.position.subtract(body.position);
                     const distance = direction.length();
 
-                    const f = (body.mass * other_body.mass) / (distance * distance);
-                    const norm_direction = direction.normalize();
-                    force = force.add(norm_direction.scale(f));
+                    // Gravitational Force
+                    {
+                        const f = (body.mass * other_body.mass) / (distance * distance);
+                        const norm_direction = direction.normalize();
+                        force = force.add(norm_direction.scale(f));
+                    }
+
+                    // Electrostatic Force
+                    {
+                        const inverse_distance = 1.0 / distance;
+
+                        const charge_direction = direction.normalize();
+
+                        const charge_product = body.charge * other_body.charge;
+                        const electrostatic_force_magnitude = COLOUMB_CONSTANT * charge_product * inverse_distance * inverse_distance;
+
+                        const electrostatic_force = charge_direction.scale(electrostatic_force_magnitude / body.mass);
+
+                        force = force.add(electrostatic_force);
+                    }
                 }
             }
         }
@@ -622,23 +652,12 @@ fn draw_ui(state: *State) !void {
                 state.focused_ui_element = .VEL_Z;
             }
 
-            _ = rg.colorPicker(
-                rl.Rectangle{
-                    .x = state.ui.base_x_offset,
-                    .y = get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 9) + (4 * state.ui.padding),
-                    .width = state.ui.half_width - 25,
-                    .height = 2 * state.ui.base_height,
-                },
-                "Color",
-                &state.new_body.color,
-            );
-
             if (rg.valueBoxFloat(
                 .{
-                    .x = state.ui.base_x_offset + state.ui.half_width + (3 * state.ui.padding),
+                    .x = state.ui.base_x_offset + 30,
                     .y = get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 9) + (4 * state.ui.padding),
-                    .width = (state.controls_pos.width - 20) / 2 - 30,
-                    .height = 2 * state.ui.base_height,
+                    .width = state.ui.half_width - 30 - state.ui.padding,
+                    .height = state.ui.base_height,
                 },
                 "Mass",
                 state.new_body.mass_str,
@@ -648,10 +667,36 @@ fn draw_ui(state: *State) !void {
                 state.focused_ui_element = .MASS;
             }
 
+            if (rg.valueBoxFloat(
+                .{
+                    .x = state.ui.base_x_offset + state.ui.half_width + state.ui.padding + 30,
+                    .y = get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 9) + (4 * state.ui.padding),
+                    .width = state.ui.half_width - 30 - state.ui.padding,
+                    .height = state.ui.base_height,
+                },
+                "Charge",
+                state.new_body.charge_str,
+                &state.new_body.charge,
+                state.focused_ui_element == .CHARGE,
+            ) != 0) {
+                state.focused_ui_element = .CHARGE;
+            }
+
+            _ = rg.colorPicker(
+                rl.Rectangle{
+                    .x = state.ui.base_x_offset,
+                    .y = get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 10) + (4 * state.ui.padding),
+                    .width = state.ui.base_width_full - 25,
+                    .height = 2 * state.ui.base_height,
+                },
+                "Color",
+                &state.new_body.color,
+            );
+
             if (rg.button(
                 .{
                     .x = state.ui.base_x_offset,
-                    .y = get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 10) + state.ui.base_height + (4 * state.ui.padding),
+                    .y = get_ui_y_offset(state.ui.base_y_offset, state.ui.base_height, state.ui.padding, 12) + (3 * state.ui.padding),
                     .width = state.ui.base_width_full,
                     .height = state.ui.base_height,
                 },
@@ -663,6 +708,7 @@ fn draw_ui(state: *State) !void {
                         state.new_body.velocity,
                         if (state.new_body.mass > 0.0) state.new_body.mass else 1.0,
                         state.new_body.color,
+                        state.new_body.charge,
                     ));
                 } else {
                     state.bodies.items[state.focused_body_index] = Body.init(
@@ -670,6 +716,7 @@ fn draw_ui(state: *State) !void {
                         state.new_body.velocity,
                         if (state.new_body.mass > 0.0) state.new_body.mass else 1.0,
                         state.new_body.color,
+                        state.new_body.charge,
                     );
                 }
             }
@@ -783,24 +830,29 @@ pub fn main() !void {
     // chatgpt lied to me about stable orbits existing in the 3 body problem
     // too lazy to find better ones tho so whatever
     try initial_position.append(allocator, Body.init(
-        rl.Vector3{ .x = 20.0, .y = 0.0, .z = 0.0 },
-        rl.Vector3{ .x = 0.0, .y = 0.0, .z = -0.17 },
-        5.0,
+        rl.Vector3{ .x = 10.0, .y = 0.0, .z = 0.0 },
+        rl.Vector3{ .x = 0.0, .y = 0.0, .z = -0.0 },
+        1.0,
         .red,
+        1.0,
     ));
 
     try initial_position.append(allocator, Body.init(
-        rl.Vector3{ .x = -10.0, .y = 0.0, .z = 17.320508 },
-        rl.Vector3{ .x = 0.147198, .y = 0.0, .z = 0.084949 },
+        rl.Vector3{ .x = -10.0, .y = 0.0, .z = 0.0 },
+        // fall towards red
+        // rl.Vector3{ .x = 0.147198, .y = 0.0, .z = -0.084949 },
+        rl.Vector3{ .x = 0.0, .y = 0.0, .z = -0.0 },
         1.0,
         .green,
+        -1.0,
     ));
 
     try initial_position.append(allocator, Body.init(
         rl.Vector3{ .x = -10.0, .y = 0.0, .z = -17.320508 },
         rl.Vector3{ .x = -0.147198, .y = 0.0, .z = 0.084949 },
-        10.0,
+        2.5,
         .blue,
+        0.0,
     ));
 
     // === Initialization ===

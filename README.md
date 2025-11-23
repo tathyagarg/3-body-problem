@@ -72,6 +72,7 @@ You only need [Zig](https://ziglang.org/download/) (version 0.15.0 or later) ins
 - Trails to visualize the paths of the bodies.
 - Customizable initial conditions for the bodies.
 - Adding and editing bodies during runtime.
+- Electrostatic force to simulate charged bodies.
 
 ## Controls
 
