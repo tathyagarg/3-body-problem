@@ -299,8 +299,6 @@ const State = struct {
             self.new_body.color = body.color;
             self.new_body.charge = body.charge;
 
-            std.debug.print("Editing body charge: {}\n", .{body.charge});
-
             _ = try std.fmt.bufPrintZ(&self.new_body.pos_x_buffer, "{}", .{body.position.x});
             _ = try std.fmt.bufPrintZ(&self.new_body.pos_y_buffer, "{}", .{body.position.y});
             _ = try std.fmt.bufPrintZ(&self.new_body.pos_z_buffer, "{}", .{body.position.z});
@@ -999,6 +997,13 @@ pub fn main() !void {
 
         rl.endMode3D();
 
+        rl.drawRectangle(
+            @intFromFloat(state.controls_pos.x),
+            @intFromFloat(state.controls_pos.y),
+            @intFromFloat(state.controls_pos.width),
+            @intFromFloat(state.controls_pos.height),
+            state.colors.background_color,
+        );
         try draw_ui(&state);
 
         rl.endDrawing();
