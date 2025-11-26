@@ -17,6 +17,14 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          
+      - name: Install raylib
+        run: |
+          sudo apt-get update
+          sudo apt install libasound2-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libglu1-mesa-dev libxcursor-dev libxinerama-dev
+
+          # sudo apt install build-essential git
+          # sudo apt install libasound2-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libglu1-mesa-dev libxcursor-dev libxinerama-dev
 
       - name: Build project
         run: zig build -Doptimize=ReleaseFast
